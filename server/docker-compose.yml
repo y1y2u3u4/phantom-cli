@@ -1,0 +1,23 @@
+version: "3.8"
+
+services:
+  phantom-server:
+    build: .
+    container_name: phantom-server
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - "${SOCKS_PORT:-1080}:1080"
+    env_file:
+      - .env
+    volumes:
+      - phantom-data:/etc/phantom
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  phantom-data:

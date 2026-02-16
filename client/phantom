@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+# Phantom CLI - Zero-config AI network wrapper
+# Main entry point with subcommand routing
+
+set -euo pipefail
+
+PHANTOM_VERSION="1.0.0"
+PHANTOM_DIR="$HOME/.phantom"
+PHANTOM_CONFIG="$PHANTOM_DIR/config"
+SHADOW_HOME="$HOME/.phantom_env"
+
+# Resolve the real location of this script (follow symlinks)
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_SOURCE" ]; do
+    SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+    SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+    [[ "$SCRIPT_SOURCE" != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR/$SCRIPT_SOURCE"
+done
+PHANTOM_LIB="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)/lib"
+
+# ── Colors ──────────────────────────────────────────────────────────
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m' # No Color
+
+log_info()    { echo -e "${CYAN}[info]${NC} $*"; }
+log_success() { echo -e "${GREEN}[ok]${NC} $*"; }
+log_warn()    { echo -e "${YELLOW}[warn]${NC} $*"; }
+log_error()   { echo -e "${RED}[error]${NC} $*" >&2; }
+
+# ── Source modules ──────────────────────────────────────────────────
+source "$PHANTOM_LIB/config.sh"
+source "$PHANTOM_LIB/tunnel.sh"
+source "$PHANTOM_LIB/sandbox.sh"
+source "$PHANTOM_LIB/hijack.sh"
+source "$PHANTOM_LIB/doctor.sh"
+
+# ── Usage ───────────────────────────────────────────────────────────
+phantom_usage() {
+    cat <<EOF
+${BOLD}Phantom CLI${NC} v${PHANTOM_VERSION} - Zero-config AI network wrapper
+
+${BOLD}USAGE${NC}
+    phantom <command> [options]
+
+${BOLD}COMMANDS${NC}
+    ${GREEN}init${NC}            Interactive setup wizard (VPS, credentials)
+    ${GREEN}connect${NC}         Establish SSH SOCKS5 tunnel
+    ${GREEN}disconnect${NC}      Tear down tunnel
+    ${GREEN}status${NC}          Show tunnel status and config
+    ${GREEN}doctor${NC}          Full diagnostic check
+    ${GREEN}<cmd> [args]${NC}    Hijack and execute command through proxy
+
+${BOLD}EXAMPLES${NC}
+    phantom init                  # First-time setup
+    phantom connect               # Start tunnel
+    phantom claude                # Run claude through proxy
+    phantom npm install           # Run npm through proxy
+    phantom doctor                # Check everything works
+
+${BOLD}CONFIG${NC}
+    ~/.phantom/config             # Configuration file
+    ~/.phantom/tunnel.pid         # Tunnel PID file
+    ~/.phantom_env/               # Shadow sandbox HOME
+
+EOF
+}
+
+# ── Init command ────────────────────────────────────────────────────
+phantom_init() {
+    echo -e "${BOLD}Phantom CLI Setup Wizard${NC}"
+    echo "────────────────────────────────────────"
+    echo ""
+
+    # Ensure config dir exists
+    phantom_config_init
+
+    # VPS settings
+    local current_host
+    current_host=$(phantom_config_get "SERVER_HOST" 2>/dev/null || echo "")
+    read -rp "VPS IP/hostname [${current_host:-none}]: " input_host
+    local host="${input_host:-$current_host}"
+    if [ -z "$host" ]; then
+        log_error "VPS host is required"
+        return 1
+    fi
+
+    local current_port
+    current_port=$(phantom_config_get "SERVER_PORT" 2>/dev/null || echo "22")
+    read -rp "SSH port [${current_port}]: " input_port
+    local port="${input_port:-$current_port}"
+
+    local current_socks_port
+    current_socks_port=$(phantom_config_get "SOCKS_PORT" 2>/dev/null || echo "1080")
+    read -rp "SOCKS5 port [${current_socks_port}]: " input_socks_port
+    local socks_port="${input_socks_port:-$current_socks_port}"
+
+    # SSH key
+    local current_ssh_key
+    current_ssh_key=$(phantom_config_get "SSH_KEY" 2>/dev/null || echo "$HOME/.ssh/id_rsa")
+    read -rp "SSH key path [${current_ssh_key}]: " input_ssh_key
+    local ssh_key="${input_ssh_key:-$current_ssh_key}"
+
+    if [ ! -f "$ssh_key" ]; then
+        log_warn "SSH key not found at $ssh_key"
+    fi
+
+    # SOCKS5 auth
+    local current_socks_user
+    current_socks_user=$(phantom_config_get "SOCKS_USER" 2>/dev/null || echo "")
+    read -rp "SOCKS5 username [${current_socks_user:-none}]: " input_socks_user
+    local socks_user="${input_socks_user:-$current_socks_user}"
+
+    local current_socks_pass
+    current_socks_pass=$(phantom_config_get "SOCKS_PASS" 2>/dev/null || echo "")
+    read -rsp "SOCKS5 password [${current_socks_pass:+****}]: " input_socks_pass
+    echo ""
+    local socks_pass="${input_socks_pass:-$current_socks_pass}"
+
+    # Auto-connect option
+    local current_auto
+    current_auto=$(phantom_config_get "AUTO_CONNECT" 2>/dev/null || echo "true")
+    read -rp "Auto-connect on hijack? (true/false) [${current_auto}]: " input_auto
+    local auto_connect="${input_auto:-$current_auto}"
+
+    # Save config
+    phantom_config_set "SERVER_HOST" "$host"
+    phantom_config_set "SERVER_PORT" "$port"
+    phantom_config_set "SOCKS_PORT" "$socks_port"
+    phantom_config_set "SSH_KEY" "$ssh_key"
+    phantom_config_set "SOCKS_USER" "$socks_user"
+    phantom_config_set "SOCKS_PASS" "$socks_pass"
+    phantom_config_set "AUTO_CONNECT" "$auto_connect"
+
+    echo ""
+    log_success "Configuration saved to $PHANTOM_CONFIG"
+
+    # Setup sandbox
+    phantom_sandbox_setup
+    log_success "Shadow sandbox created at $SHADOW_HOME"
+
+    echo ""
+    log_info "Run ${GREEN}phantom connect${NC} to start the tunnel"
+    log_info "Then ${GREEN}phantom claude${NC} to use Claude through the proxy"
+}
+
+# ── Status command ──────────────────────────────────────────────────
+phantom_status() {
+    echo -e "${BOLD}Phantom Status${NC}"
+    echo "────────────────────────────────────────"
+
+    # Config check
+    if [ ! -f "$PHANTOM_CONFIG" ]; then
+        log_warn "Not configured. Run: phantom init"
+        return 1
+    fi
+
+    local host port socks_port socks_user
+    host=$(phantom_config_get "SERVER_HOST" 2>/dev/null || echo "not set")
+    port=$(phantom_config_get "SERVER_PORT" 2>/dev/null || echo "not set")
+    socks_port=$(phantom_config_get "SOCKS_PORT" 2>/dev/null || echo "not set")
+    socks_user=$(phantom_config_get "SOCKS_USER" 2>/dev/null || echo "not set")
+
+    echo -e "  Server:     ${CYAN}${host}:${port}${NC}"
+    echo -e "  SOCKS5:     ${CYAN}127.0.0.1:${socks_port}${NC}"
+    echo -e "  User:       ${CYAN}${socks_user}${NC}"
+    echo -e "  Sandbox:    ${CYAN}${SHADOW_HOME}${NC}"
+    echo ""
+
+    # Tunnel status
+    phantom_tunnel_status
+}
+
+# ── Main router ─────────────────────────────────────────────────────
+main() {
+    if [ $# -eq 0 ]; then
+        phantom_usage
+        exit 0
+    fi
+
+    local cmd="$1"
+    shift
+
+    case "$cmd" in
+        init)
+            phantom_init "$@"
+            ;;
+        connect)
+            phantom_tunnel_connect "$@"
+            ;;
+        disconnect)
+            phantom_tunnel_disconnect "$@"
+            ;;
+        status)
+            phantom_status "$@"
+            ;;
+        doctor)
+            phantom_doctor_run "$@"
+            ;;
+        help|--help|-h)
+            phantom_usage
+            ;;
+        version|--version|-v)
+            echo "phantom v${PHANTOM_VERSION}"
+            ;;
+        *)
+            # Pass-through: hijack the command
+            phantom_hijack_exec "$cmd" "$@"
+            ;;
+    esac
+}
+
+main "$@"
