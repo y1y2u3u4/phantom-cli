@@ -261,7 +261,7 @@ def handle_connect(client_socket: socket.socket, target: str) -> None:
         remote_socket.settimeout(30)
         remote_socket.connect((host, port))
 
-        client_socket.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        # Note: 200 response is already sent by do_CONNECT() before calling this function
 
         t1 = threading.Thread(
             target=_forward, args=(client_socket, remote_socket), daemon=True
