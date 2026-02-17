@@ -144,20 +144,28 @@ phantom_status() {
         return 1
     fi
 
-    local host port socks_port socks_user
+    local host port http_proxy_port connection_mode
     host=$(phantom_config_get "SERVER_HOST" 2>/dev/null || echo "not set")
     port=$(phantom_config_get "SERVER_PORT" 2>/dev/null || echo "not set")
-    socks_port=$(phantom_config_get "SOCKS_PORT" 2>/dev/null || echo "not set")
-    socks_user=$(phantom_config_get "SOCKS_USER" 2>/dev/null || echo "not set")
+    http_proxy_port=$(phantom_config_get "HTTP_PROXY_PORT" 2>/dev/null || echo "8080")
+    connection_mode=$(phantom_config_get "CONNECTION_MODE" 2>/dev/null || echo "direct")
 
-    echo -e "  Server:     ${CYAN}${host}:${port}${NC}"
-    echo -e "  SOCKS5:     ${CYAN}127.0.0.1:${socks_port}${NC}"
-    echo -e "  User:       ${CYAN}${socks_user}${NC}"
+    echo -e "  Server:     ${CYAN}${host}${NC}"
+    echo -e "  HTTP Proxy: ${CYAN}${host}:${http_proxy_port}${NC}"
+    echo -e "  Mode:       ${CYAN}${connection_mode}${NC}"
     echo -e "  Sandbox:    ${CYAN}${SHADOW_HOME}${NC}"
     echo ""
 
-    # Tunnel status
-    phantom_tunnel_status
+    # Proxy reachability
+    if [ "$connection_mode" = "direct" ]; then
+        if nc -z -w 3 "$host" "$http_proxy_port" 2>/dev/null; then
+            echo -e "  Proxy:      ${GREEN}connected${NC}"
+        else
+            echo -e "  Proxy:      ${RED}unreachable${NC}"
+        fi
+    else
+        phantom_tunnel_status
+    fi
 }
 
 # ── Main router ─────────────────────────────────────────────────────
