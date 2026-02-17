@@ -76,21 +76,27 @@ _auth_sync_via_api() {
 
     log_info "Syncing credentials via API from $server_host..."
 
-    local response
-    response=$(curl -sf -H "Authorization: Bearer $api_key" \
-        "http://${server_host}:${http_proxy_port}/api/credentials" 2>/dev/null) || {
-        log_error "API credential sync failed. Check your API key and server status."
-        return 1
-    }
-
     # Ensure sandbox exists
     mkdir -p "$SHADOW_HOME/.claude"
 
-    # Parse JSON and write files using python3
-    python3 -c "
+    # Pipe curl directly to python3 to avoid bash variable issues with large JSON
+    curl -sf -H "Authorization: Bearer $api_key" \
+        "http://${server_host}:${http_proxy_port}/api/credentials" 2>/dev/null \
+    | SHADOW_HOME="$SHADOW_HOME" python3 -c "
 import json, os, sys
-data = json.loads(sys.stdin.read())
+raw = sys.stdin.read()
+if not raw:
+    print('ERROR: Empty response from server', file=sys.stderr)
+    sys.exit(1)
+try:
+    data = json.loads(raw)
+except json.JSONDecodeError as e:
+    print(f'ERROR: Invalid JSON: {e}', file=sys.stderr)
+    sys.exit(1)
 files = data.get('files', {})
+if not files:
+    print('ERROR: No credential files in response', file=sys.stderr)
+    sys.exit(1)
 shadow = os.environ.get('SHADOW_HOME', os.path.expanduser('~/.phantom_env'))
 for path, content in files.items():
     full = os.path.join(shadow, path)
@@ -99,8 +105,8 @@ for path, content in files.items():
         f.write(content)
     print(f'  Synced {path}')
 print(f'Total: {len(files)} file(s)')
-" <<< "$response" || {
-        log_error "Failed to parse credentials response."
+" || {
+        log_error "API credential sync failed. Check your API key and server status."
         return 1
     }
 
