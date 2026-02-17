@@ -17,18 +17,16 @@ phantom_config_init() {
 # Server settings
 SERVER_HOST=
 SERVER_PORT=22
-SOCKS_PORT=1080
+HTTP_PROXY_PORT=8080
 
 # Authentication
 SSH_KEY=~/.ssh/id_rsa
-SOCKS_USER=
-SOCKS_PASS=
 
 # Options
 AUTO_CONNECT=true
 AUTO_RECONNECT=true
 
-# Connection mode: "tunnel" (SSH SOCKS5) or "direct" (Dante SOCKS5)
+# Connection mode: "tunnel" (SSH tunnel) or "direct" (connect to VPS directly)
 CONNECTION_MODE=direct
 DEFAULTS
         log_info "Created default config at $PHANTOM_CONFIG"

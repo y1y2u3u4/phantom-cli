@@ -93,58 +93,33 @@ phantom_init() {
     read -rp "SSH port [${current_port}]: " input_port
     local port="${input_port:-$current_port}"
 
-    local current_socks_port
-    current_socks_port=$(phantom_config_get "SOCKS_PORT" 2>/dev/null || echo "1080")
-    read -rp "SOCKS5 port [${current_socks_port}]: " input_socks_port
-    local socks_port="${input_socks_port:-$current_socks_port}"
+    local current_http_proxy_port
+    current_http_proxy_port=$(phantom_config_get "HTTP_PROXY_PORT" 2>/dev/null || echo "8080")
+    read -rp "HTTP proxy port [${current_http_proxy_port}]: " input_http_proxy_port
+    local http_proxy_port="${input_http_proxy_port:-$current_http_proxy_port}"
 
-    # SSH key
+    # SSH key (for tunnel mode)
     local current_ssh_key
     current_ssh_key=$(phantom_config_get "SSH_KEY" 2>/dev/null || echo "$HOME/.ssh/id_rsa")
     read -rp "SSH key path [${current_ssh_key}]: " input_ssh_key
     local ssh_key="${input_ssh_key:-$current_ssh_key}"
-
-    if [ ! -f "$ssh_key" ]; then
-        log_warn "SSH key not found at $ssh_key"
-    fi
-
-    # SOCKS5 auth
-    local current_socks_user
-    current_socks_user=$(phantom_config_get "SOCKS_USER" 2>/dev/null || echo "")
-    read -rp "SOCKS5 username [${current_socks_user:-none}]: " input_socks_user
-    local socks_user="${input_socks_user:-$current_socks_user}"
-
-    local current_socks_pass
-    current_socks_pass=$(phantom_config_get "SOCKS_PASS" 2>/dev/null || echo "")
-    read -rsp "SOCKS5 password [${current_socks_pass:+****}]: " input_socks_pass
-    echo ""
-    local socks_pass="${input_socks_pass:-$current_socks_pass}"
 
     # Connection mode
     local current_mode
     current_mode=$(phantom_config_get "CONNECTION_MODE" 2>/dev/null || echo "direct")
     echo ""
     echo "Connection mode:"
-    echo "  direct  - Connect to VPS SOCKS5 directly (simpler, recommended)"
-    echo "  tunnel  - SSH tunnel + local SOCKS5 (more secure)"
+    echo "  direct  - Connect to VPS HTTP proxy directly (simpler, recommended)"
+    echo "  tunnel  - SSH tunnel to VPS (more secure, encrypts traffic)"
     read -rp "Connection mode (direct/tunnel) [${current_mode}]: " input_mode
     local connection_mode="${input_mode:-$current_mode}"
-
-    # Auto-connect option
-    local current_auto
-    current_auto=$(phantom_config_get "AUTO_CONNECT" 2>/dev/null || echo "true")
-    read -rp "Auto-connect on hijack? (true/false) [${current_auto}]: " input_auto
-    local auto_connect="${input_auto:-$current_auto}"
 
     # Save config
     phantom_config_set "SERVER_HOST" "$host"
     phantom_config_set "SERVER_PORT" "$port"
-    phantom_config_set "SOCKS_PORT" "$socks_port"
+    phantom_config_set "HTTP_PROXY_PORT" "$http_proxy_port"
     phantom_config_set "SSH_KEY" "$ssh_key"
-    phantom_config_set "SOCKS_USER" "$socks_user"
-    phantom_config_set "SOCKS_PASS" "$socks_pass"
     phantom_config_set "CONNECTION_MODE" "$connection_mode"
-    phantom_config_set "AUTO_CONNECT" "$auto_connect"
 
     echo ""
     log_success "Configuration saved to $PHANTOM_CONFIG"

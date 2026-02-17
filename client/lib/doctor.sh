@@ -50,12 +50,20 @@ phantom_doctor_run() {
         "Run: phantom connect"
     issues=$((issues + $?))
 
-    # 5. Check SOCKS5 port
-    local socks_port
-    socks_port=$(phantom_config_get "SOCKS_PORT" 2>/dev/null || echo "1080")
-    _doctor_check "SOCKS5 port reachable (127.0.0.1:${socks_port})" \
-        "nc -z 127.0.0.1 $socks_port 2>/dev/null" \
-        "Tunnel may not be running. Run: phantom connect"
+    # 5. Check HTTP proxy port
+    local server_host http_proxy_port connection_mode proxy_host
+    server_host=$(phantom_config_get "SERVER_HOST" 2>/dev/null || echo "")
+    http_proxy_port=$(phantom_config_get "HTTP_PROXY_PORT" 2>/dev/null || echo "8080")
+    connection_mode=$(phantom_config_get "CONNECTION_MODE" 2>/dev/null || echo "direct")
+    if [ "$connection_mode" = "direct" ]; then
+        proxy_host="$server_host"
+    else
+        proxy_host="127.0.0.1"
+    fi
+
+    _doctor_check "HTTP proxy reachable (${proxy_host}:${http_proxy_port})" \
+        "nc -z -w 3 $proxy_host $http_proxy_port 2>/dev/null" \
+        "Ensure HTTP CONNECT proxy is running on the VPS."
     issues=$((issues + $?))
 
     # 6. Check sandbox
@@ -64,21 +72,13 @@ phantom_doctor_run() {
         "Run: phantom init"
     issues=$((issues + $?))
 
-    # 7. DNS leak check (only if tunnel is up)
-    if _tunnel_is_alive && nc -z 127.0.0.1 "$socks_port" 2>/dev/null; then
+    # 7. Network test (only if proxy is reachable)
+    if nc -z -w 3 "$proxy_host" "$http_proxy_port" 2>/dev/null; then
         echo ""
         echo -e "${BOLD}Network Tests${NC}"
         echo "────────────────────────────────────────"
 
-        local socks_user socks_pass proxy_url
-        socks_user=$(phantom_config_get "SOCKS_USER" 2>/dev/null || echo "")
-        socks_pass=$(phantom_config_get "SOCKS_PASS" 2>/dev/null || echo "")
-
-        if [ -n "$socks_user" ] && [ -n "$socks_pass" ]; then
-            proxy_url="socks5h://${socks_user}:${socks_pass}@127.0.0.1:${socks_port}"
-        else
-            proxy_url="socks5h://127.0.0.1:${socks_port}"
-        fi
+        local proxy_url="http://${proxy_host}:${http_proxy_port}"
 
         # Check external IP through proxy
         local proxy_ip

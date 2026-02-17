@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Phantom CLI - Network hijack execution
 # Sets proxy env vars and executes command in shadow sandbox
+# Uses HTTP CONNECT proxy (Node.js/Claude Code does NOT support SOCKS5 via env vars)
 
-# Execute a command through the SOCKS5 proxy with shadow HOME
+# Execute a command through the HTTP proxy with shadow HOME
 # Usage: phantom_hijack_exec CMD [ARGS...]
 phantom_hijack_exec() {
     if [ $# -eq 0 ]; then
@@ -12,23 +13,25 @@ phantom_hijack_exec() {
     fi
 
     # Load config
-    local socks_port socks_user socks_pass socks_host connection_mode
-    socks_port=$(phantom_config_get "SOCKS_PORT" 2>/dev/null || echo "1080")
-    socks_user=$(phantom_config_get "SOCKS_USER" 2>/dev/null || echo "")
-    socks_pass=$(phantom_config_get "SOCKS_PASS" 2>/dev/null || echo "")
+    local server_host http_proxy_port connection_mode
+    server_host=$(phantom_config_get "SERVER_HOST") || { log_error "SERVER_HOST not configured. Run: phantom init"; return 1; }
+    http_proxy_port=$(phantom_config_get "HTTP_PROXY_PORT" 2>/dev/null || echo "8080")
     connection_mode=$(phantom_config_get "CONNECTION_MODE" 2>/dev/null || echo "direct")
 
+    local proxy_host
     if [ "$connection_mode" = "direct" ]; then
-        # Direct mode: connect to VPS Dante SOCKS5 directly
-        socks_host=$(phantom_config_get "SERVER_HOST") || { log_error "SERVER_HOST not configured. Run: phantom init"; return 1; }
-        if ! nc -z -w 3 "$socks_host" "$socks_port" 2>/dev/null; then
-            log_error "Cannot reach SOCKS5 at ${socks_host}:${socks_port}"
-            return 1
-        fi
+        proxy_host="$server_host"
     else
-        # Tunnel mode: ensure SSH tunnel is up, use localhost
-        socks_host="127.0.0.1"
+        # Tunnel mode: SSH tunnel forwards HTTP proxy port to localhost
+        proxy_host="127.0.0.1"
         phantom_tunnel_ensure || return 1
+    fi
+
+    # Verify HTTP proxy is reachable
+    if ! nc -z -w 3 "$proxy_host" "$http_proxy_port" 2>/dev/null; then
+        log_error "Cannot reach HTTP proxy at ${proxy_host}:${http_proxy_port}"
+        log_info "Ensure the HTTP CONNECT proxy is running on the VPS."
+        return 1
     fi
 
     # Ensure sandbox exists
@@ -36,17 +39,12 @@ phantom_hijack_exec() {
         phantom_sandbox_setup
     fi
 
-    # Build proxy URL with optional auth
-    local proxy_url
-    if [ -n "$socks_user" ] && [ -n "$socks_pass" ]; then
-        proxy_url="socks5h://${socks_user}:${socks_pass}@${socks_host}:${socks_port}"
-    else
-        proxy_url="socks5h://${socks_host}:${socks_port}"
-    fi
+    # Build HTTP proxy URL
+    local proxy_url="http://${proxy_host}:${http_proxy_port}"
 
-    log_info "Hijacking: $* (via SOCKS5 proxy at ${socks_host}:${socks_port})"
+    log_info "Hijacking: $* (via HTTP proxy at ${proxy_host}:${http_proxy_port})"
 
-    # Set proxy environment
+    # Set proxy environment (HTTP CONNECT proxy - compatible with Node.js/curl/etc.)
     export HTTP_PROXY="$proxy_url"
     export HTTPS_PROXY="$proxy_url"
     export ALL_PROXY="$proxy_url"
@@ -59,7 +57,7 @@ phantom_hijack_exec() {
     # Switch to shadow HOME
     export HOME="$SHADOW_HOME"
 
-    # Source phantom profile if exists (API keys, custom env)
+    # Source phantom profile if exists (custom env vars)
     if [ -f "$SHADOW_HOME/.phantom_profile" ]; then
         source "$SHADOW_HOME/.phantom_profile"
         log_info "Loaded custom environment from .phantom_profile"
