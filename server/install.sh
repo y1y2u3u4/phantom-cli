@@ -80,6 +80,7 @@ echo "────────────────────────�
 
 mkdir -p "$PHANTOM_DIR/server"
 mkdir -p "$PHANTOM_DIR/data"
+mkdir -p "$PHANTOM_DIR/data/accounts"
 chmod 700 "$PHANTOM_DIR/data"
 
 # Docker / SOCKS5 files

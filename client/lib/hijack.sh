@@ -46,8 +46,14 @@ phantom_hijack_exec() {
         phantom_sandbox_setup
     fi
 
-    # Build HTTP proxy URL
-    local proxy_url="http://${proxy_host}:${http_proxy_port}"
+    # Build HTTP proxy URL (embed API key for upstream account routing)
+    local api_key proxy_url
+    api_key=$(phantom_config_get "API_KEY" 2>/dev/null || echo "")
+    if [ -n "$api_key" ]; then
+        proxy_url="http://${api_key}:x@${proxy_host}:${http_proxy_port}"
+    else
+        proxy_url="http://${proxy_host}:${http_proxy_port}"
+    fi
 
     log_info "Hijacking: $* (via HTTP proxy at ${proxy_host}:${http_proxy_port})"
 

@@ -69,31 +69,66 @@ server/manage-users.sh   → add/remove/list SOCKS5 users (system users with nol
 
 Single Python3 process on port 8080, zero external dependencies. Handles three roles:
 
-1. **CONNECT proxy** — bidirectional socket tunneling for Claude Code (Node.js)
-2. **REST API** — API key CRUD, credential download, auth management
-3. **Web UI** — serves `ui.html` for browser-based key management
+1. **CONNECT proxy** — bidirectional socket tunneling with upstream proxy routing (HTTP/SOCKS5/direct)
+2. **REST API** — API key CRUD, account management, usage tracking, credential download
+3. **Web UI** — serves `ui.html` for multi-account management console
+
+### Multi-Account Architecture
+
+Supports multiple Claude Code subscription accounts per VPS, each routed through a different upstream proxy:
+
+```
+Client → Phantom Server (:8080) → Upstream Proxy A → api.claude.ai (Account 1)
+                                → Upstream Proxy B → api.claude.ai (Account 2)
+                                → Direct           → api.claude.ai (Account 3)
+```
+
+**CONNECT tunnel identity:** Client embeds API key in proxy URL (`http://sk-phantom-xxx:x@VPS:8080`). Node.js auto-sends `Proxy-Authorization: Basic base64(key:x)`. Server parses this to resolve which account/upstream proxy to use.
+
+**Account resolution order:** (1) Explicit `account_id` on API key → (2) Sticky assignment in `assignments.json` → (3) Round-robin with quota awareness.
+
+**Upstream proxy types:** `direct` (no upstream), `http` (HTTP CONNECT chain), `socks5` (pure stdlib SOCKS5 client).
 
 ### API Endpoints
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| CONNECT | * | None | HTTP tunnel (proxy) |
+| CONNECT | * | Proxy-Auth | HTTP tunnel (proxy), routed via upstream |
 | GET | / | Session | Management UI |
 | GET | /api/health | None | Health check |
 | POST | /api/auth/setup | None (first time) | Set master password |
 | POST | /api/auth/login | Password | Login → session cookie |
 | GET | /api/auth/check | Session | Check login state |
-| GET | /api/keys | Session | List keys (masked) |
-| POST | /api/keys | Session | Create key |
+| GET | /api/keys | Session | List keys (with account + usage info) |
+| POST | /api/keys | Session | Create key (optional account_id) |
 | DELETE | /api/keys/:id | Session | Delete key |
-| GET | /api/credentials | Bearer API key | Download Claude credentials |
+| PUT | /api/keys/:id/account | Session | Assign key to account |
+| DELETE | /api/keys/:id/account | Session | Unassign key from account |
+| GET | /api/credentials | Bearer API key | Download account-specific credentials |
+| GET | /api/accounts | Session | List accounts (proxy passwords masked) |
+| POST | /api/accounts | Session | Create account |
+| PUT | /api/accounts/:id | Session | Update account |
+| DELETE | /api/accounts/:id | Session | Delete account |
+| POST | /api/accounts/:id/test | Session | Test upstream proxy connectivity |
+| POST | /api/accounts/:id/credentials | Session | Upload credential files |
+| GET | /api/usage?month=YYYY-MM | Session | Usage statistics |
+| GET | /api/assignments | Session | View sticky session assignments |
 
 ### Data Storage
 
 ```
 /opt/phantom-cli/data/
 ├── server_config.json    # {"master_password_hash": "salt:key"} (scrypt)
-└── api_keys.json         # [{id, name, key_hash (SHA-256), prefix, suffix, ...}]
+├── api_keys.json         # [{id, name, key_hash, account_id, ...}]
+├── accounts.json         # [{id, name, status, credentials_dir, upstream_proxy, quota}]
+├── usage.json            # {"YYYY-MM": {"key_id": {connections, bytes, cost}}}
+├── assignments.json      # {"by_api_key": {...}, "by_client_ip": {...}}
+└── accounts/
+    └── acc_<id>/
+        └── credentials/
+            ├── .claude/.credentials.json
+            ├── .claude.json
+            └── .claude/settings.json
 ```
 
 ### Security
@@ -113,7 +148,8 @@ Single Python3 process on port 8080, zero external dependencies. Handles three r
 | `~/.phantom_env/.claude/` | Isolated Claude credentials (VPS subscription) |
 | `~/.phantom_env/.phantom_profile` | Sourced before command execution (custom env vars) |
 | `/opt/phantom-cli/` | Server installation directory on VPS |
-| `/opt/phantom-cli/data/` | Server data (config, API keys) — 0700 permissions |
+| `/opt/phantom-cli/data/` | Server data (config, API keys, accounts, usage) — 0700 permissions |
+| `/opt/phantom-cli/data/accounts/` | Per-account credential directories |
 
 ## Testing Patterns
 
@@ -144,6 +180,10 @@ export -f autossh
 **Python 3.9 compatibility.** VPS may run Python 3.9 which lacks `str | None` union type syntax. Use `from __future__ import annotations` at top of all Python files.
 
 **`/api/auth/check` must return HTTP 200 for unauthenticated users.** The UI's fetch wrapper throws on non-2xx status. Return `{"authenticated": false, "needs_setup": bool}` with status 200, not 401.
+
+**Proxy-Authorization for CONNECT identity.** The client embeds the API key as `http://sk-phantom-xxx:x@host:port`. Node.js HTTP client automatically sends `Proxy-Authorization: Basic base64(key:x)` on CONNECT requests. The server extracts the username from the decoded Base64 header to identify which account to route through.
+
+**SOCKS5 client implementation.** The upstream SOCKS5 connector is a pure stdlib implementation (no external deps). It handles: greeting, username/password auth (RFC 1929), domain-based CONNECT, and variable-length bind address responses. Always use domain names (atyp=0x03), not resolved IPs, to let the proxy handle DNS.
 
 ## Deployment
 
