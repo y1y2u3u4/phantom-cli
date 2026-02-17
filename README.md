@@ -14,7 +14,7 @@ SSH into your VPS and run:
 curl -fsSL https://raw.githubusercontent.com/nicegongqing/phantom-cli/main/server/install.sh | bash
 ```
 
-This automatically installs Docker, builds the SOCKS5 container, deploys HTTP proxy, and opens ports.
+This automatically installs Docker, builds the SOCKS5 container, deploys Phantom Server (proxy + API + management UI), and opens ports. You'll be prompted to set a **master password** during installation.
 
 ### Step 2: Login on VPS
 
@@ -26,17 +26,32 @@ claude
 
 Complete the OAuth login in your browser.
 
-### Step 3: Install & Setup on Local Mac
+### Step 3: Create API Key
+
+Open the management UI in your browser:
+
+```
+http://YOUR_VPS_IP:8080/
+```
+
+Log in with your master password, then create an API key. **Copy the key — it's only shown once.**
+
+> **Tip:** For secure access, use SSH tunnel: `ssh -L 8080:localhost:8080 root@VPS_IP`, then visit `http://localhost:8080/`
+
+### Step 4: Install & Setup on Local Mac
 
 ```bash
 # Install client
 curl -fsSL https://raw.githubusercontent.com/nicegongqing/phantom-cli/main/client/install.sh | bash
 
-# One-click configure (auto-sync credentials from VPS)
+# One-click configure with API key (recommended)
+phantom setup YOUR_VPS_IP --key sk-phantom-xxxx
+
+# Or with SSH password (legacy)
 phantom setup YOUR_VPS_IP --password YOUR_SSH_PASSWORD
 ```
 
-### Step 4: Use
+### Step 5: Use
 
 ```bash
 phantom                  # Launch Claude (interactive mode)
@@ -56,7 +71,10 @@ Local macOS (Phantom Client)
     │
     ▼
 Remote VPS (Phantom Server)
-    ├── HTTP CONNECT Proxy (:8080) ← primary for Claude Code
+    ├── Phantom Server (:8080)
+    │   ├── HTTP CONNECT Proxy ← primary for Claude Code
+    │   ├── REST API ← credential sync via API key
+    │   └── Management UI ← create/manage API keys
     ├── Dante SOCKS5 Proxy (:1080) ← for curl/other tools
     ├── Docker (iptables rate limiting: 3/s burst 5)
     └── → Anthropic API (transparent proxy)
@@ -66,8 +84,8 @@ Remote VPS (Phantom Server)
 
 1. A shadow sandbox (`~/.phantom_env/`) symlinks your existing dotfiles but isolates AI credentials
 2. Environment variables (`HTTP_PROXY`, `HTTPS_PROXY`) redirect traffic through VPS
-3. HTTP CONNECT proxy on VPS handles Node.js (Claude Code) compatibility
-4. `phantom setup` auto-detects proxy, writes config, syncs credentials
+3. Phantom Server on VPS handles HTTP CONNECT proxy (Node.js compatible) + API key management
+4. `phantom setup --key` auto-detects proxy, writes config, syncs credentials via API
 
 ## Commands
 
@@ -75,8 +93,9 @@ Remote VPS (Phantom Server)
 |---------|-------------|
 | `phantom` | Launch Claude in interactive mode (default) |
 | `phantom -p "query"` | Pass arguments directly to Claude |
-| `phantom setup <IP> [--password P]` | One-click configure + credential sync |
-| `phantom auth sync` | Sync credentials from VPS |
+| `phantom setup <IP> [--key K]` | One-click configure + credential sync (recommended) |
+| `phantom setup <IP> [--password P]` | Legacy: setup with SSH password |
+| `phantom auth sync [--key K]` | Sync credentials from VPS |
 | `phantom auth status` | Check credentials, proxy, and sandbox status |
 | `phantom init` | Interactive setup wizard (advanced) |
 | `phantom connect` | Establish SSH SOCKS5 tunnel (tunnel mode) |
@@ -85,11 +104,28 @@ Remote VPS (Phantom Server)
 | `phantom doctor` | Full diagnostic — proxy, DNS leak, conflicts |
 | `phantom <cmd>` | Hijack any command (e.g., `phantom npm install`) |
 
+## API Key Authentication
+
+The recommended authentication method uses API keys instead of SSH passwords:
+
+1. **Create keys** via the management UI at `http://VPS_IP:8080/`
+2. **Use keys** with `--key` flag: `phantom setup VPS_IP --key sk-phantom-xxxx`
+3. **Keys are stored** in `~/.phantom/config` as `API_KEY=sk-phantom-xxxx`
+4. **Subsequent syncs** use the stored key automatically: `phantom auth sync`
+
+Benefits over SSH password:
+- No `sshpass` dependency required
+- Keys can be individually revoked
+- Usage tracking (last used time/IP)
+- No SSH access needed — only HTTP port 8080
+
 ## Security Model
 
 | Layer | Mechanism |
 |-------|-----------|
 | Transport | HTTP CONNECT proxy (direct) or SSH tunnel (encrypted) |
+| API Auth | API keys with SHA-256 hashed storage (never stored in plain) |
+| Master Password | scrypt hashed, rate-limited login (5 attempts/5 min) |
 | DNS | Remote resolution — no local leaks |
 | Credential Isolation | Shadow sandbox never touches `~/.claude.json` |
 | Rate Limiting | iptables bucket limiting (3/s, burst 5) on VPS |
@@ -97,7 +133,7 @@ Remote VPS (Phantom Server)
 
 ## Requirements
 
-- **Client**: macOS with `autossh` and `ssh` installed
+- **Client**: macOS with `ssh` and `curl` installed (`autossh` for tunnel mode)
 - **Server**: Ubuntu/Debian VPS with root access
 
 ## License

@@ -2,27 +2,120 @@
 # Phantom CLI - Credential management (sync from VPS + status check)
 
 # Sync Claude credentials from VPS to local sandbox
-# Usage: phantom_auth_sync [--password PASSWORD]
+# Usage: phantom_auth_sync [--key API_KEY | --password PASSWORD]
+#   --key KEY       Use API-based credential sync (recommended)
+#   --password PASS Use SSH/sshpass-based credential sync (legacy)
+#   (no args)       Fall back to API_KEY from config, or prompt
 phantom_auth_sync() {
-    local server_host password=""
+    local api_key="" password="" method=""
+
+    # Parse arguments
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --key)
+                if [ -z "${2:-}" ]; then
+                    log_error "--key requires a value"
+                    return 1
+                fi
+                api_key="$2"
+                method="api"
+                shift 2
+                ;;
+            --password)
+                if [ -z "${2:-}" ]; then
+                    log_error "--password requires a value"
+                    return 1
+                fi
+                password="$2"
+                method="ssh"
+                shift 2
+                ;;
+            *)
+                log_warn "Unknown argument: $1"
+                shift
+                ;;
+        esac
+    done
+
+    # If no explicit method, try API_KEY from config
+    if [ -z "$method" ]; then
+        local config_api_key
+        config_api_key=$(phantom_config_get "API_KEY" 2>/dev/null || echo "")
+        if [ -n "$config_api_key" ]; then
+            api_key="$config_api_key"
+            method="api"
+        else
+            log_error "No authentication method provided."
+            log_info "Use: phantom auth sync --key YOUR_API_KEY"
+            log_info "  or: phantom auth sync --password YOUR_SSH_PASSWORD"
+            log_info "  or: set API_KEY in $PHANTOM_CONFIG"
+            return 1
+        fi
+    fi
+
+    case "$method" in
+        api)
+            _auth_sync_via_api "$api_key"
+            ;;
+        ssh)
+            _auth_sync_via_ssh "$password"
+            ;;
+    esac
+}
+
+# Sync credentials via HTTP API using an API key
+_auth_sync_via_api() {
+    local api_key="$1"
+    local server_host http_proxy_port
 
     server_host=$(phantom_config_get "SERVER_HOST") || {
         log_error "SERVER_HOST not configured. Run: phantom setup <VPS_IP>"
         return 1
     }
+    http_proxy_port=$(phantom_config_get "HTTP_PROXY_PORT" 2>/dev/null || echo "8080")
 
-    # Parse arguments
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --password)
-                password="$2"
-                shift 2
-                ;;
-            *)
-                shift
-                ;;
-        esac
-    done
+    log_info "Syncing credentials via API from $server_host..."
+
+    local response
+    response=$(curl -sf -H "Authorization: Bearer $api_key" \
+        "http://${server_host}:${http_proxy_port}/api/credentials" 2>/dev/null) || {
+        log_error "API credential sync failed. Check your API key and server status."
+        return 1
+    }
+
+    # Ensure sandbox exists
+    mkdir -p "$SHADOW_HOME/.claude"
+
+    # Parse JSON and write files using python3
+    python3 -c "
+import json, os, sys
+data = json.loads(sys.stdin.read())
+files = data.get('files', {})
+shadow = os.environ.get('SHADOW_HOME', os.path.expanduser('~/.phantom_env'))
+for path, content in files.items():
+    full = os.path.join(shadow, path)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, 'w') as f:
+        f.write(content)
+    print(f'  Synced {path}')
+print(f'Total: {len(files)} file(s)')
+" <<< "$response" || {
+        log_error "Failed to parse credentials response."
+        return 1
+    }
+
+    log_success "Credentials synced via API"
+}
+
+# Sync credentials via SSH (legacy sshpass approach)
+_auth_sync_via_ssh() {
+    local password="$1"
+    local server_host
+
+    server_host=$(phantom_config_get "SERVER_HOST") || {
+        log_error "SERVER_HOST not configured. Run: phantom setup <VPS_IP>"
+        return 1
+    }
 
     # Build SSH command
     local ssh_cmd="ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"

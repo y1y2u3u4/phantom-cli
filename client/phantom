@@ -50,23 +50,29 @@ ${BOLD}USAGE${NC}
     phantom <command> [options]   Run a subcommand
 
 ${BOLD}COMMANDS${NC}
-    ${GREEN}setup <IP> [--password P]${NC}   One-click configure (IP + sync credentials)
-    ${GREEN}auth sync [--password P]${NC}    Sync credentials from VPS
-    ${GREEN}auth status${NC}                 Check credential and connection status
-    ${GREEN}init${NC}                        Interactive setup wizard (advanced)
-    ${GREEN}connect${NC}                     Establish SSH SOCKS5 tunnel
-    ${GREEN}disconnect${NC}                  Tear down tunnel
-    ${GREEN}status${NC}                      Show connection status and config
-    ${GREEN}doctor${NC}                      Full diagnostic check
-    ${GREEN}<cmd> [args]${NC}                Hijack and execute command through proxy
+    ${GREEN}setup <IP> [--key K|--password P]${NC}   One-click configure (IP + sync credentials)
+    ${GREEN}auth sync [--key K|--password P]${NC}    Sync credentials from VPS
+    ${GREEN}auth status${NC}                          Check credential and connection status
+    ${GREEN}init${NC}                                 Interactive setup wizard (advanced)
+    ${GREEN}connect${NC}                              Establish SSH SOCKS5 tunnel
+    ${GREEN}disconnect${NC}                           Tear down tunnel
+    ${GREEN}status${NC}                               Show connection status and config
+    ${GREEN}doctor${NC}                               Full diagnostic check
+    ${GREEN}<cmd> [args]${NC}                         Hijack and execute command through proxy
+
+${BOLD}AUTH OPTIONS${NC}
+    ${GREEN}--key K${NC}       API key authentication (recommended)
+    ${YELLOW}--password P${NC}  SSH password authentication (legacy)
 
 ${BOLD}EXAMPLES${NC}
-    phantom                             # Start Claude interactive mode
-    phantom -p "hello"                  # Single query (pass-through to Claude)
-    phantom setup 1.2.3.4               # One-click setup with VPS IP
-    phantom setup 1.2.3.4 --password X  # Setup with SSH password
-    phantom auth status                 # Check credentials
-    phantom doctor                      # Diagnostics
+    phantom                                    # Start Claude interactive mode
+    phantom -p "hello"                         # Single query (pass-through to Claude)
+    phantom setup 1.2.3.4 --key myapikey      # One-click setup with API key (recommended)
+    phantom setup 1.2.3.4 --password X        # Setup with SSH password (legacy)
+    phantom auth sync --key myapikey          # Sync credentials via API key
+    phantom auth sync --password X            # Sync credentials via SSH password (legacy)
+    phantom auth status                        # Check credentials
+    phantom doctor                             # Diagnostics
 
 ${BOLD}CONFIG${NC}
     ~/.phantom/config             # Configuration file
@@ -80,17 +86,29 @@ EOF
 phantom_setup() {
     if [ $# -eq 0 ]; then
         log_error "VPS IP is required."
-        log_info "Usage: phantom setup <VPS_IP> [--password PASSWORD]"
+        log_info "Usage: phantom setup <VPS_IP> [--key API_KEY | --password PASSWORD]"
         return 1
     fi
 
     local host="$1"
     shift
 
-    local password=""
+    local api_key="" password=""
     while [ $# -gt 0 ]; do
         case "$1" in
+            --key)
+                if [ -z "${2:-}" ]; then
+                    log_error "--key requires a value"
+                    return 1
+                fi
+                api_key="$2"
+                shift 2
+                ;;
             --password)
+                if [ -z "${2:-}" ]; then
+                    log_error "--password requires a value"
+                    return 1
+                fi
                 password="$2"
                 shift 2
                 ;;
@@ -131,6 +149,9 @@ phantom_setup() {
     phantom_config_set "CONNECTION_MODE" "direct"
     phantom_config_set "AUTO_CONNECT" "true"
     phantom_config_set "AUTO_RECONNECT" "true"
+    if [ -n "$api_key" ]; then
+        phantom_config_set "API_KEY" "$api_key"
+    fi
     log_success "Config saved to $PHANTOM_CONFIG"
 
     # Step 3: Create sandbox
@@ -141,10 +162,12 @@ phantom_setup() {
     echo ""
     log_info "Syncing credentials from VPS..."
     local sync_args=()
-    if [ -n "$password" ]; then
+    if [ -n "$api_key" ]; then
+        sync_args+=(--key "$api_key")
+    elif [ -n "$password" ]; then
         sync_args+=(--password "$password")
     fi
-    phantom_auth_sync "${sync_args[@]}" || log_warn "Credential sync failed. You can retry: phantom auth sync"
+    phantom_auth_sync "${sync_args[@]}" || log_warn "Credential sync failed. You can retry: phantom auth sync --key YOUR_API_KEY"
 
     # Step 5: Verify proxy connection
     echo ""

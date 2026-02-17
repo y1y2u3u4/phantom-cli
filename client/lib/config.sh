@@ -21,6 +21,7 @@ HTTP_PROXY_PORT=8080
 
 # Authentication
 SSH_KEY=~/.ssh/id_rsa
+API_KEY=
 
 # Options
 AUTO_CONNECT=true

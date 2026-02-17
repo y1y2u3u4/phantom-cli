@@ -29,6 +29,9 @@ curl -fsSL .../server/install.sh | bash
 # Or manually
 cd server && docker-compose up -d --build
 
+# Test Phantom Server locally
+python3 server/phantom_server.py 8080 /tmp/phantom-test-data
+
 # Manage SOCKS5 users on VPS
 docker exec phantom-server manage-users.sh add <user> <pass>
 docker exec phantom-server manage-users.sh list
@@ -43,13 +46,15 @@ client/lib/sandbox.sh   → Creates ~/.phantom_env/ with symlinks (isolates .cla
 client/lib/tunnel.sh    → autossh SOCKS5 tunnel management (tunnel mode only)
 client/lib/config.sh    → KEY=VALUE config reader/writer (~/.phantom/config)
 client/lib/doctor.sh    → Diagnostics: deps, proxy reachability, DNS leak, conflict detection
-client/lib/auth.sh      → Credential sync from VPS (phantom auth sync/status)
+client/lib/auth.sh      → Credential sync: --key (API) or --password (SSH legacy)
 
-server/install.sh       → VPS one-click installer (Docker + HTTP proxy + Claude Code)
-server/Dockerfile       → Ubuntu 22.04 + Dante SOCKS5 + iptables
-server/entrypoint.sh    → iptables rate limiting (3/s burst 5 on :443) + danted startup
-server/danted.conf      → Dante SOCKS5 config with PAM username auth
-server/manage-users.sh  → add/remove/list SOCKS5 users (system users with nologin)
+server/phantom_server.py → Hybrid server: HTTP CONNECT proxy + REST API + Management UI
+server/ui.html           → Single-file SPA for API key management (Claude Console style)
+server/install.sh        → VPS one-click installer (Docker + Phantom Server + Claude Code)
+server/Dockerfile        → Ubuntu 22.04 + Dante SOCKS5 + iptables
+server/entrypoint.sh     → iptables rate limiting (3/s burst 5 on :443) + danted startup
+server/danted.conf       → Dante SOCKS5 config with PAM username auth
+server/manage-users.sh   → add/remove/list SOCKS5 users (system users with nologin)
 ```
 
 **Two connection modes:**
@@ -60,15 +65,55 @@ server/manage-users.sh  → add/remove/list SOCKS5 users (system users with nolo
 
 **Shadow sandbox** (`~/.phantom_env/`): Symlinks `.gitconfig`, `.ssh`, `.npmrc`, etc. from real HOME, but NEVER symlinks `.claude.json` or `.claude/` — these are isolated per-VPS-account credentials.
 
+## Phantom Server (server/phantom_server.py)
+
+Single Python3 process on port 8080, zero external dependencies. Handles three roles:
+
+1. **CONNECT proxy** — bidirectional socket tunneling for Claude Code (Node.js)
+2. **REST API** — API key CRUD, credential download, auth management
+3. **Web UI** — serves `ui.html` for browser-based key management
+
+### API Endpoints
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| CONNECT | * | None | HTTP tunnel (proxy) |
+| GET | / | Session | Management UI |
+| GET | /api/health | None | Health check |
+| POST | /api/auth/setup | None (first time) | Set master password |
+| POST | /api/auth/login | Password | Login → session cookie |
+| GET | /api/auth/check | Session | Check login state |
+| GET | /api/keys | Session | List keys (masked) |
+| POST | /api/keys | Session | Create key |
+| DELETE | /api/keys/:id | Session | Delete key |
+| GET | /api/credentials | Bearer API key | Download Claude credentials |
+
+### Data Storage
+
+```
+/opt/phantom-cli/data/
+├── server_config.json    # {"master_password_hash": "salt:key"} (scrypt)
+└── api_keys.json         # [{id, name, key_hash (SHA-256), prefix, suffix, ...}]
+```
+
+### Security
+
+- Master password: scrypt hashed (n=16384, r=8, p=1)
+- API keys: `sk-phantom-<32hex>`, only SHA-256 hash stored
+- Sessions: in-memory, HttpOnly + SameSite=Strict cookie, 24h TTL
+- Login rate limit: 5 failures / 5 minutes per IP
+- File writes: atomic (tmp + rename), 0600 permissions, threading.Lock
+
 ## Key Paths
 
 | Path | Purpose |
 |------|---------|
-| `~/.phantom/config` | Client config (SERVER_HOST, HTTP_PROXY_PORT, CONNECTION_MODE) |
+| `~/.phantom/config` | Client config (SERVER_HOST, HTTP_PROXY_PORT, API_KEY, CONNECTION_MODE) |
 | `~/.phantom_env/` | Shadow sandbox HOME used during hijack |
 | `~/.phantom_env/.claude/` | Isolated Claude credentials (VPS subscription) |
 | `~/.phantom_env/.phantom_profile` | Sourced before command execution (custom env vars) |
 | `/opt/phantom-cli/` | Server installation directory on VPS |
+| `/opt/phantom-cli/data/` | Server data (config, API keys) — 0700 permissions |
 
 ## Testing Patterns
 

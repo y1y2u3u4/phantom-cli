@@ -1,0 +1,1735 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Phantom - API Keys</title>
+  <style>
+    /* ===== CSS Custom Properties ===== */
+    :root {
+      --bg: #0f0f0f;
+      --card-bg: #1a1a1a;
+      --border: #2a2a2a;
+      --text-primary: #e5e5e5;
+      --text-secondary: #a3a3a3;
+      --accent: #6366f1;
+      --accent-hover: #818cf8;
+      --danger: #ef4444;
+      --danger-hover: #f87171;
+      --success: #22c55e;
+      --success-bg: rgba(34, 197, 94, 0.08);
+      --success-border: rgba(34, 197, 94, 0.25);
+      --input-bg: #0f0f0f;
+      --input-border: #333;
+      --shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+      --shadow-sm: 0 1px 4px rgba(0, 0, 0, 0.3);
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f5f5f5;
+        --card-bg: #ffffff;
+        --border: #e5e5e5;
+        --text-primary: #171717;
+        --text-secondary: #737373;
+        --input-bg: #f9f9f9;
+        --input-border: #d4d4d4;
+        --shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+        --shadow-sm: 0 1px 4px rgba(0, 0, 0, 0.06);
+      }
+    }
+
+    [data-theme="light"] {
+      --bg: #f5f5f5;
+      --card-bg: #ffffff;
+      --border: #e5e5e5;
+      --text-primary: #171717;
+      --text-secondary: #737373;
+      --input-bg: #f9f9f9;
+      --input-border: #d4d4d4;
+      --shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+      --shadow-sm: 0 1px 4px rgba(0, 0, 0, 0.06);
+    }
+
+    [data-theme="dark"] {
+      --bg: #0f0f0f;
+      --card-bg: #1a1a1a;
+      --border: #2a2a2a;
+      --text-primary: #e5e5e5;
+      --text-secondary: #a3a3a3;
+      --input-bg: #0f0f0f;
+      --input-border: #333;
+      --shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+      --shadow-sm: 0 1px 4px rgba(0, 0, 0, 0.3);
+    }
+
+    /* ===== Reset & Base ===== */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      font-size: 16px;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background-color: var(--bg);
+      color: var(--text-primary);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      transition: background-color 0.25s ease, color 0.25s ease;
+    }
+
+    /* ===== Layout ===== */
+    .app-wrapper {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+
+    /* ===== Header ===== */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--border);
+      background-color: var(--card-bg);
+      transition: background-color 0.25s ease, border-color 0.25s ease;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .logo-icon {
+      width: 32px;
+      height: 32px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .logo-icon svg {
+      width: 18px;
+      height: 18px;
+      fill: #fff;
+    }
+
+    .header-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-primary);
+      letter-spacing: -0.01em;
+    }
+
+    .theme-toggle {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 10px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      font-size: 15px;
+      transition: border-color 0.2s, background-color 0.2s, color 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+    }
+
+    .theme-toggle:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      background-color: rgba(99, 102, 241, 0.08);
+    }
+
+    .theme-toggle:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    /* ===== Main Content ===== */
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 16px;
+    }
+
+    .content-wrapper {
+      width: 100%;
+      max-width: 720px;
+    }
+
+    /* ===== Card ===== */
+    .card {
+      background-color: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 32px;
+      box-shadow: var(--shadow);
+      transition: background-color 0.25s ease, border-color 0.25s ease;
+    }
+
+    .card-title {
+      font-size: 20px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 8px;
+      letter-spacing: -0.02em;
+    }
+
+    .card-description {
+      font-size: 14px;
+      color: var(--text-secondary);
+      margin-bottom: 24px;
+      line-height: 1.6;
+    }
+
+    /* ===== Form Elements ===== */
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 16px;
+    }
+
+    .form-group:last-of-type {
+      margin-bottom: 0;
+    }
+
+    label {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      letter-spacing: 0.01em;
+    }
+
+    .input-wrapper {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+
+    input[type="text"],
+    input[type="password"] {
+      width: 100%;
+      padding: 10px 12px;
+      background-color: var(--input-bg);
+      border: 1px solid var(--input-border);
+      border-radius: 6px;
+      font-size: 14px;
+      color: var(--text-primary);
+      transition: border-color 0.2s, box-shadow 0.2s, background-color 0.25s;
+      outline: none;
+      font-family: inherit;
+    }
+
+    input[type="text"]:focus,
+    input[type="password"]:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+    }
+
+    input[type="text"]::placeholder,
+    input[type="password"]::placeholder {
+      color: var(--text-secondary);
+      opacity: 0.6;
+    }
+
+    .input-wrapper input[type="password"],
+    .input-wrapper input.has-toggle {
+      padding-right: 44px;
+    }
+
+    .toggle-visibility {
+      position: absolute;
+      right: 10px;
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--text-secondary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 4px;
+      border-radius: 4px;
+      transition: color 0.2s;
+    }
+
+    .toggle-visibility:hover {
+      color: var(--text-primary);
+    }
+
+    .toggle-visibility:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    .toggle-visibility svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    /* ===== Buttons ===== */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 10px 18px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: background-color 0.2s, border-color 0.2s, color 0.2s, opacity 0.2s, box-shadow 0.2s;
+      font-family: inherit;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .btn:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    .btn:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    .btn-primary {
+      background-color: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background-color: var(--accent-hover);
+      border-color: var(--accent-hover);
+      box-shadow: 0 2px 8px rgba(99, 102, 241, 0.35);
+    }
+
+    .btn-danger {
+      background-color: transparent;
+      color: var(--danger);
+      border-color: var(--danger);
+    }
+
+    .btn-danger:hover:not(:disabled) {
+      background-color: var(--danger);
+      color: #fff;
+      box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+    }
+
+    .btn-ghost {
+      background-color: transparent;
+      color: var(--text-secondary);
+      border-color: var(--border);
+    }
+
+    .btn-ghost:hover:not(:disabled) {
+      background-color: rgba(255, 255, 255, 0.04);
+      color: var(--text-primary);
+      border-color: var(--text-secondary);
+    }
+
+    [data-theme="light"] .btn-ghost:hover:not(:disabled) {
+      background-color: rgba(0, 0, 0, 0.04);
+    }
+
+    .btn-sm {
+      padding: 7px 12px;
+      font-size: 13px;
+    }
+
+    .btn-full {
+      width: 100%;
+      margin-top: 20px;
+    }
+
+    /* ===== Spinner ===== */
+    .spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      flex-shrink: 0;
+    }
+
+    .spinner-dark {
+      border: 2px solid rgba(99, 102, 241, 0.2);
+      border-top-color: var(--accent);
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* ===== Error / Alert ===== */
+    .alert {
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-size: 13px;
+      margin-top: 14px;
+      display: none;
+      align-items: flex-start;
+      gap: 8px;
+      line-height: 1.5;
+    }
+
+    .alert.visible {
+      display: flex;
+    }
+
+    .alert-error {
+      background-color: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.25);
+      color: #f87171;
+    }
+
+    .alert-success {
+      background-color: var(--success-bg);
+      border: 1px solid var(--success-border);
+      color: var(--success);
+    }
+
+    .alert svg {
+      flex-shrink: 0;
+      margin-top: 1px;
+      width: 15px;
+      height: 15px;
+    }
+
+    /* ===== Page States ===== */
+    .page-state {
+      display: none;
+      animation: fadeIn 0.25s ease;
+    }
+
+    .page-state.active {
+      display: block;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ===== Auth Pages (Setup / Login) ===== */
+    .auth-wrapper {
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding-top: 24px;
+    }
+
+    .auth-card {
+      width: 100%;
+      max-width: 400px;
+    }
+
+    /* ===== Dashboard ===== */
+    .section {
+      margin-bottom: 24px;
+    }
+
+    .section-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .section-title svg {
+      width: 16px;
+      height: 16px;
+      color: var(--text-secondary);
+    }
+
+    /* Create key inline form */
+    .create-form {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+    }
+
+    .create-form input {
+      flex: 1;
+    }
+
+    .create-form .btn {
+      flex-shrink: 0;
+      padding: 10px 16px;
+    }
+
+    /* New key banner */
+    .new-key-banner {
+      background-color: var(--success-bg);
+      border: 1px solid var(--success-border);
+      border-radius: 8px;
+      padding: 16px 18px;
+      margin-top: 14px;
+      display: none;
+      animation: fadeIn 0.25s ease;
+    }
+
+    .new-key-banner.visible {
+      display: block;
+    }
+
+    .new-key-banner-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--success);
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .new-key-banner-title svg {
+      width: 15px;
+      height: 15px;
+    }
+
+    .key-display-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .key-value {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 13px;
+      color: var(--text-primary);
+      background-color: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 12px;
+      flex: 1;
+      word-break: break-all;
+      user-select: all;
+      transition: background-color 0.25s, border-color 0.25s;
+    }
+
+    .copy-btn {
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 8px 12px;
+      background-color: rgba(99, 102, 241, 0.12);
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--accent);
+      cursor: pointer;
+      transition: background-color 0.2s, border-color 0.2s;
+      font-family: inherit;
+    }
+
+    .copy-btn:hover {
+      background-color: rgba(99, 102, 241, 0.2);
+      border-color: var(--accent);
+    }
+
+    .copy-btn:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    .copy-btn svg {
+      width: 13px;
+      height: 13px;
+    }
+
+    .copy-btn.copied {
+      background-color: rgba(34, 197, 94, 0.12);
+      border-color: rgba(34, 197, 94, 0.35);
+      color: var(--success);
+    }
+
+    .new-key-warning {
+      font-size: 12px;
+      color: #f59e0b;
+      display: flex;
+      align-items: flex-start;
+      gap: 5px;
+      margin-bottom: 12px;
+      line-height: 1.5;
+    }
+
+    .new-key-warning svg {
+      width: 13px;
+      height: 13px;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+
+    .new-key-banner .btn-ghost {
+      font-size: 13px;
+      padding: 7px 14px;
+    }
+
+    /* Keys table */
+    .keys-table-wrapper {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .keys-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    .keys-table th {
+      text-align: left;
+      padding: 10px 14px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--text-secondary);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+
+    .keys-table td {
+      padding: 13px 14px;
+      color: var(--text-primary);
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+
+    .keys-table tbody tr:last-child td {
+      border-bottom: none;
+    }
+
+    .keys-table tbody tr:hover td {
+      background-color: rgba(255, 255, 255, 0.02);
+    }
+
+    [data-theme="light"] .keys-table tbody tr:hover td {
+      background-color: rgba(0, 0, 0, 0.02);
+    }
+
+    .key-name {
+      font-weight: 500;
+      max-width: 180px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .key-masked {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .key-time {
+      color: var(--text-secondary);
+      white-space: nowrap;
+      font-size: 12px;
+    }
+
+    .key-time .never {
+      font-style: italic;
+      opacity: 0.6;
+    }
+
+    .actions-cell {
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    /* Empty state */
+    .empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: var(--text-secondary);
+    }
+
+    .empty-state svg {
+      width: 36px;
+      height: 36px;
+      margin-bottom: 12px;
+      opacity: 0.4;
+    }
+
+    .empty-state p {
+      font-size: 14px;
+    }
+
+    /* Loading skeleton */
+    .skeleton-row td {
+      padding: 13px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .skeleton-cell {
+      height: 14px;
+      background: linear-gradient(90deg, var(--border) 25%, rgba(255,255,255,0.04) 50%, var(--border) 75%);
+      background-size: 200% 100%;
+      border-radius: 4px;
+      animation: shimmer 1.4s infinite;
+    }
+
+    [data-theme="light"] .skeleton-cell {
+      background: linear-gradient(90deg, #e5e5e5 25%, rgba(0,0,0,0.04) 50%, #e5e5e5 75%);
+      background-size: 200% 100%;
+    }
+
+    @keyframes shimmer {
+      0%   { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+
+    /* Delete confirmation inline */
+    .confirm-row td {
+      background-color: rgba(239, 68, 68, 0.05);
+      border-bottom: 1px solid rgba(239, 68, 68, 0.15);
+      padding: 10px 14px;
+    }
+
+    .confirm-content {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .confirm-text {
+      font-size: 13px;
+      color: var(--text-primary);
+      line-height: 1.5;
+    }
+
+    .confirm-text strong {
+      color: var(--danger);
+    }
+
+    .confirm-actions {
+      display: flex;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    /* ===== Footer ===== */
+    footer {
+      padding: 20px 24px;
+      border-top: 1px solid var(--border);
+      text-align: center;
+      transition: border-color 0.25s;
+    }
+
+    .footer-hint {
+      font-size: 12px;
+      color: var(--text-secondary);
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      background-color: var(--card-bg);
+      border: 1px solid var(--border);
+      display: inline-block;
+      padding: 6px 14px;
+      border-radius: 6px;
+      transition: background-color 0.25s, border-color 0.25s;
+    }
+
+    .footer-hint .cmd-key {
+      color: var(--accent);
+    }
+
+    /* ===== Initial loading ===== */
+    .init-loading {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 80px 20px;
+      gap: 14px;
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+
+    .init-loading .spinner {
+      width: 24px;
+      height: 24px;
+    }
+
+    /* ===== Responsive ===== */
+    @media (max-width: 600px) {
+      header {
+        padding: 12px 16px;
+      }
+
+      main {
+        padding: 24px 12px;
+      }
+
+      .card {
+        padding: 22px 18px;
+      }
+
+      .create-form {
+        flex-direction: column;
+      }
+
+      .create-form .btn {
+        width: 100%;
+      }
+
+      .keys-table th:nth-child(3),
+      .keys-table td:nth-child(3),
+      .keys-table th:nth-child(4),
+      .keys-table td:nth-child(4) {
+        display: none;
+      }
+
+      .confirm-content {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .confirm-actions {
+        width: 100%;
+      }
+
+      .confirm-actions .btn {
+        flex: 1;
+      }
+    }
+  </style>
+</head>
+<body>
+<div class="app-wrapper">
+
+  <!-- Header -->
+  <header role="banner">
+    <div class="header-left">
+      <div class="logo-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/>
+        </svg>
+      </div>
+      <span class="header-title">Phantom API Keys</span>
+    </div>
+    <button
+      class="theme-toggle"
+      id="themeToggle"
+      aria-label="Toggle color theme"
+      title="Toggle color theme"
+    >
+      <span id="themeIcon">&#9788;</span>
+    </button>
+  </header>
+
+  <!-- Main Content -->
+  <main role="main">
+    <div class="content-wrapper">
+
+      <!-- Init Loading -->
+      <div id="initLoading" class="page-state active">
+        <div class="init-loading">
+          <div class="spinner spinner-dark"></div>
+          <span>Loading...</span>
+        </div>
+      </div>
+
+      <!-- Setup State -->
+      <div id="setupState" class="page-state">
+        <div class="auth-wrapper">
+          <div class="auth-card">
+            <div class="card">
+              <h1 class="card-title">Set Master Password</h1>
+              <p class="card-description">
+                Create a master password to protect your Phantom server.
+                This password is used to access this management console.
+              </p>
+
+              <div class="form-group">
+                <label for="setupPassword">Password</label>
+                <div class="input-wrapper">
+                  <input
+                    type="password"
+                    id="setupPassword"
+                    name="setupPassword"
+                    autocomplete="new-password"
+                    placeholder="Minimum 8 characters"
+                    class="has-toggle"
+                  />
+                  <button
+                    class="toggle-visibility"
+                    type="button"
+                    aria-label="Show password"
+                    onclick="togglePasswordVisibility('setupPassword', this)"
+                  >
+                    <!-- Eye icon -->
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                      <circle cx="12" cy="12" r="3"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label for="setupConfirm">Confirm Password</label>
+                <div class="input-wrapper">
+                  <input
+                    type="password"
+                    id="setupConfirm"
+                    name="setupConfirm"
+                    autocomplete="new-password"
+                    placeholder="Re-enter your password"
+                    class="has-toggle"
+                  />
+                  <button
+                    class="toggle-visibility"
+                    type="button"
+                    aria-label="Show confirm password"
+                    onclick="togglePasswordVisibility('setupConfirm', this)"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                      <circle cx="12" cy="12" r="3"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              <div class="alert alert-error" id="setupError" role="alert"></div>
+
+              <button
+                class="btn btn-primary btn-full"
+                id="setupBtn"
+                onclick="setupPassword()"
+              >
+                Set Password
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Login State -->
+      <div id="loginState" class="page-state">
+        <div class="auth-wrapper">
+          <div class="auth-card">
+            <div class="card">
+              <h1 class="card-title">Sign In</h1>
+              <p class="card-description">
+                Enter your master password to manage API keys.
+              </p>
+
+              <div class="form-group">
+                <label for="loginPassword">Password</label>
+                <div class="input-wrapper">
+                  <input
+                    type="password"
+                    id="loginPassword"
+                    name="loginPassword"
+                    autocomplete="current-password"
+                    placeholder="Enter your password"
+                    class="has-toggle"
+                  />
+                  <button
+                    class="toggle-visibility"
+                    type="button"
+                    aria-label="Show password"
+                    onclick="togglePasswordVisibility('loginPassword', this)"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                      <circle cx="12" cy="12" r="3"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              <div class="alert alert-error" id="loginError" role="alert"></div>
+
+              <button
+                class="btn btn-primary btn-full"
+                id="loginBtn"
+                onclick="login()"
+              >
+                Sign In
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Dashboard State -->
+      <div id="dashboardState" class="page-state">
+
+        <!-- Create Key Section -->
+        <div class="section">
+          <div class="card">
+            <div class="section-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="8" x2="12" y2="16"/>
+                <line x1="8" y1="12" x2="16" y2="12"/>
+              </svg>
+              Create New API Key
+            </div>
+
+            <div class="create-form">
+              <input
+                type="text"
+                id="newKeyName"
+                placeholder="Key name (e.g. Production, My App)"
+                autocomplete="off"
+                aria-label="New API key name"
+                onkeydown="if(event.key==='Enter') createKey()"
+              />
+              <button
+                class="btn btn-primary"
+                id="createKeyBtn"
+                onclick="createKey()"
+              >
+                Create Key
+              </button>
+            </div>
+
+            <div class="alert alert-error" id="createError" role="alert"></div>
+
+            <!-- New Key Banner -->
+            <div class="new-key-banner" id="newKeyBanner" role="status" aria-live="polite">
+              <div class="new-key-banner-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polyline points="20 6 9 17 4 12"/>
+                </svg>
+                API Key Created
+              </div>
+              <div class="key-display-row">
+                <span class="key-value" id="newKeyValue" aria-label="New API key value"></span>
+                <button class="copy-btn" id="copyBtn" onclick="copyNewKey()" aria-label="Copy API key to clipboard">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                  </svg>
+                  Copy
+                </button>
+              </div>
+              <div class="new-key-warning">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                  <line x1="12" y1="9" x2="12" y2="13"/>
+                  <line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+                Make sure to copy your API key now. You won't be able to see it again!
+              </div>
+              <button class="btn btn-ghost btn-sm" onclick="dismissNewKey()">Done</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Keys List Section -->
+        <div class="section">
+          <div class="card" style="padding: 0; overflow: hidden;">
+            <div style="padding: 20px 20px 16px; border-bottom: 1px solid var(--border);">
+              <div class="section-title" style="margin-bottom: 0;">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
+                </svg>
+                API Keys
+              </div>
+            </div>
+            <div class="keys-table-wrapper">
+              <table class="keys-table" aria-label="API keys list">
+                <thead>
+                  <tr>
+                    <th scope="col">Name</th>
+                    <th scope="col">Key</th>
+                    <th scope="col">Created</th>
+                    <th scope="col">Last Used</th>
+                    <th scope="col" style="text-align: right;">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="keysTableBody">
+                  <!-- Rows injected by JS -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+      </div>
+      <!-- end dashboardState -->
+
+    </div>
+    <!-- end content-wrapper -->
+  </main>
+
+  <!-- Footer -->
+  <footer role="contentinfo">
+    <code class="footer-hint">
+      Usage: phantom setup YOUR_VPS_IP <span class="cmd-key">--key</span> sk-phantom-xxxx
+    </code>
+  </footer>
+
+</div>
+<!-- end app-wrapper -->
+
+<script>
+(function () {
+  'use strict';
+
+  /* ===================================================
+     Theme Management
+  =================================================== */
+  var themeToggle = document.getElementById('themeToggle');
+  var themeIcon   = document.getElementById('themeIcon');
+
+  function getSystemTheme() {
+    return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  }
+
+  function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    themeIcon.textContent = theme === 'dark' ? '\u2600' : '\uD83C\uDF19';
+    themeToggle.setAttribute('aria-label', theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+    try { localStorage.setItem('phantom-theme', theme); } catch(e) {}
+  }
+
+  function toggleTheme() {
+    var current = document.documentElement.getAttribute('data-theme') || getSystemTheme();
+    applyTheme(current === 'dark' ? 'light' : 'dark');
+  }
+
+  themeToggle.addEventListener('click', toggleTheme);
+
+  // Initialize theme
+  (function () {
+    var saved = null;
+    try { saved = localStorage.getItem('phantom-theme'); } catch(e) {}
+    applyTheme(saved || getSystemTheme());
+  })();
+
+  // Listen for system theme changes (only if no saved preference)
+  window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', function (e) {
+    var saved = null;
+    try { saved = localStorage.getItem('phantom-theme'); } catch(e) {}
+    if (!saved) {
+      applyTheme(e.matches ? 'light' : 'dark');
+    }
+  });
+
+  /* ===================================================
+     Page State Management
+  =================================================== */
+  var states = ['initLoading', 'setupState', 'loginState', 'dashboardState'];
+
+  function showState(name) {
+    states.forEach(function (id) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      if (id === name) {
+        el.classList.add('active');
+      } else {
+        el.classList.remove('active');
+      }
+    });
+  }
+
+  /* ===================================================
+     API Helper
+  =================================================== */
+  async function api(method, path, body) {
+    var options = {
+      method: method,
+      headers: {},
+      credentials: 'same-origin',
+    };
+    if (body !== undefined && body !== null) {
+      options.headers['Content-Type'] = 'application/json';
+      options.body = JSON.stringify(body);
+    }
+    var response;
+    try {
+      response = await fetch(path, options);
+    } catch (e) {
+      throw new Error('Network error: ' + e.message);
+    }
+    var text = await response.text();
+    var data = null;
+    if (text) {
+      try { data = JSON.parse(text); } catch (e) {
+        // non-JSON body
+        data = { message: text };
+      }
+    }
+    if (!response.ok) {
+      var errMsg = (data && (data.error || data.message)) || ('Server error ' + response.status);
+      var err = new Error(errMsg);
+      err.status = response.status;
+      throw err;
+    }
+    return data;
+  }
+
+  /* ===================================================
+     Alert Helpers
+  =================================================== */
+  function showAlert(elId, message, type) {
+    var el = document.getElementById(elId);
+    if (!el) return;
+    el.textContent = '';
+    el.className = 'alert alert-' + (type || 'error') + ' visible';
+
+    // Icon
+    var icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    icon.setAttribute('viewBox', '0 0 24 24');
+    icon.setAttribute('fill', 'none');
+    icon.setAttribute('stroke', 'currentColor');
+    icon.setAttribute('stroke-width', '2');
+    icon.setAttribute('stroke-linecap', 'round');
+    icon.setAttribute('stroke-linejoin', 'round');
+    icon.setAttribute('aria-hidden', 'true');
+    if (type === 'success') {
+      icon.innerHTML = '<polyline points="20 6 9 17 4 12"/>';
+    } else {
+      icon.innerHTML = '<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>';
+    }
+    el.appendChild(icon);
+
+    var text = document.createElement('span');
+    text.textContent = message;
+    el.appendChild(text);
+  }
+
+  function hideAlert(elId) {
+    var el = document.getElementById(elId);
+    if (el) {
+      el.classList.remove('visible');
+      el.textContent = '';
+    }
+  }
+
+  /* ===================================================
+     Button Loading State
+  =================================================== */
+  function setButtonLoading(btnId, loading, originalText) {
+    var btn = document.getElementById(btnId);
+    if (!btn) return;
+    btn.disabled = loading;
+    if (loading) {
+      btn.setAttribute('data-original', btn.textContent.trim());
+      btn.innerHTML = '<div class="spinner"></div> ' + (originalText || 'Loading...');
+    } else {
+      var orig = btn.getAttribute('data-original');
+      btn.textContent = orig || originalText || '';
+    }
+  }
+
+  /* ===================================================
+     Password Visibility Toggle
+  =================================================== */
+  window.togglePasswordVisibility = function (inputId, btn) {
+    var input = document.getElementById(inputId);
+    if (!input) return;
+    var isHidden = input.type === 'password';
+    input.type = isHidden ? 'text' : 'password';
+    btn.setAttribute('aria-label', isHidden ? 'Hide password' : 'Show password');
+
+    if (isHidden) {
+      btn.innerHTML = [
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">',
+        '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>',
+        '<line x1="1" y1="1" x2="23" y2="23"/>',
+        '</svg>'
+      ].join('');
+    } else {
+      btn.innerHTML = [
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">',
+        '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>',
+        '<circle cx="12" cy="12" r="3"/>',
+        '</svg>'
+      ].join('');
+    }
+  };
+
+  /* ===================================================
+     Setup Password
+  =================================================== */
+  window.setupPassword = async function () {
+    var password = document.getElementById('setupPassword').value;
+    var confirm  = document.getElementById('setupConfirm').value;
+
+    hideAlert('setupError');
+
+    if (!password) {
+      showAlert('setupError', 'Please enter a password.');
+      return;
+    }
+    if (password.length < 8) {
+      showAlert('setupError', 'Password must be at least 8 characters.');
+      return;
+    }
+    if (password !== confirm) {
+      showAlert('setupError', 'Passwords do not match.');
+      return;
+    }
+
+    setButtonLoading('setupBtn', true, 'Setting password...');
+    try {
+      await api('POST', '/api/auth/setup', { password: password });
+      // After setup, go to dashboard
+      await loadDashboard();
+    } catch (e) {
+      showAlert('setupError', e.message || 'Failed to set password.');
+    } finally {
+      setButtonLoading('setupBtn', false, 'Set Password');
+    }
+  };
+
+  // Allow Enter key in setup form
+  document.getElementById('setupPassword').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { document.getElementById('setupConfirm').focus(); }
+  });
+  document.getElementById('setupConfirm').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { window.setupPassword(); }
+  });
+
+  /* ===================================================
+     Login
+  =================================================== */
+  window.login = async function () {
+    var password = document.getElementById('loginPassword').value;
+    hideAlert('loginError');
+
+    if (!password) {
+      showAlert('loginError', 'Please enter your password.');
+      return;
+    }
+
+    setButtonLoading('loginBtn', true, 'Signing in...');
+    try {
+      await api('POST', '/api/auth/login', { password: password });
+      document.getElementById('loginPassword').value = '';
+      await loadDashboard();
+    } catch (e) {
+      if (e.status === 401) {
+        showAlert('loginError', 'Incorrect password. Please try again.');
+      } else if (e.status === 429) {
+        showAlert('loginError', 'Too many login attempts. Please wait and try again.');
+      } else {
+        showAlert('loginError', e.message || 'Login failed. Please try again.');
+      }
+    } finally {
+      setButtonLoading('loginBtn', false, 'Sign In');
+    }
+  };
+
+  document.getElementById('loginPassword').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { window.login(); }
+  });
+
+  /* ===================================================
+     Date Formatting
+  =================================================== */
+  function formatDate(isoString) {
+    if (!isoString) return null;
+    var date;
+    try { date = new Date(isoString); } catch(e) { return isoString; }
+    if (isNaN(date.getTime())) return isoString;
+
+    var now = Date.now();
+    var diff = Math.floor((now - date.getTime()) / 1000); // seconds
+
+    if (diff < 60) return 'Just now';
+    if (diff < 3600) {
+      var m = Math.floor(diff / 60);
+      return m + ' minute' + (m !== 1 ? 's' : '') + ' ago';
+    }
+    if (diff < 86400) {
+      var h = Math.floor(diff / 3600);
+      return h + ' hour' + (h !== 1 ? 's' : '') + ' ago';
+    }
+    if (diff < 2592000) {
+      var d = Math.floor(diff / 86400);
+      return d + ' day' + (d !== 1 ? 's' : '') + ' ago';
+    }
+    if (diff < 31536000) {
+      var mo = Math.floor(diff / 2592000);
+      return mo + ' month' + (mo !== 1 ? 's' : '') + ' ago';
+    }
+    var yr = Math.floor(diff / 31536000);
+    return yr + ' year' + (yr !== 1 ? 's' : '') + ' ago';
+  }
+
+  /* ===================================================
+     Build Masked Key
+  =================================================== */
+  function maskKey(prefix, suffix) {
+    if (prefix && suffix) {
+      return prefix + '...' + suffix;
+    }
+    if (prefix) return prefix + '...';
+    return '...';
+  }
+
+  /* ===================================================
+     Skeleton Rows
+  =================================================== */
+  function renderSkeleton() {
+    var body = document.getElementById('keysTableBody');
+    var html = '';
+    for (var i = 0; i < 3; i++) {
+      html += [
+        '<tr class="skeleton-row">',
+        '  <td><div class="skeleton-cell" style="width:70%"></div></td>',
+        '  <td><div class="skeleton-cell" style="width:90%"></div></td>',
+        '  <td><div class="skeleton-cell" style="width:60%"></div></td>',
+        '  <td><div class="skeleton-cell" style="width:60%"></div></td>',
+        '  <td style="text-align:right"><div class="skeleton-cell" style="width:60px;margin-left:auto"></div></td>',
+        '</tr>'
+      ].join('');
+    }
+    body.innerHTML = html;
+  }
+
+  /* ===================================================
+     Render Keys Table
+  =================================================== */
+  var pendingDeleteId = null;
+
+  function renderKeys(keys) {
+    var body = document.getElementById('keysTableBody');
+    pendingDeleteId = null;
+
+    if (!keys || keys.length === 0) {
+      body.innerHTML = [
+        '<tr><td colspan="5">',
+        '  <div class="empty-state">',
+        '    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">',
+        '      <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>',
+        '    </svg>',
+        '    <p>No API keys yet. Create one above to get started.</p>',
+        '  </div>',
+        '</td></tr>'
+      ].join('');
+      return;
+    }
+
+    var html = '';
+    keys.forEach(function (key) {
+      var created = formatDate(key.created_at);
+      var lastUsed = key.last_used_at ? formatDate(key.last_used_at) : null;
+      var masked = maskKey(key.prefix, key.suffix);
+      var safeId = encodeURIComponent(key.id);
+      var safeName = escapeHtml(key.name || 'Unnamed');
+
+      html += [
+        '<tr id="key-row-' + escapeAttr(key.id) + '">',
+        '  <td><span class="key-name" title="' + safeName + '">' + safeName + '</span></td>',
+        '  <td><span class="key-masked">' + escapeHtml(masked) + '</span></td>',
+        '  <td><span class="key-time">' + (created ? escapeHtml(created) : '<span class="never">Unknown</span>') + '</span></td>',
+        '  <td><span class="key-time">' + (lastUsed ? escapeHtml(lastUsed) : '<span class="never">Never</span>') + '</span></td>',
+        '  <td class="actions-cell">',
+        '    <button class="btn btn-danger btn-sm" onclick="confirmDelete(' + JSON.stringify(key.id) + ', ' + JSON.stringify(key.name || 'Unnamed') + ')" aria-label="Delete key ' + safeName + '">',
+        '      Delete',
+        '    </button>',
+        '  </td>',
+        '</tr>'
+      ].join('');
+    });
+    body.innerHTML = html;
+  }
+
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function escapeAttr(str) {
+    return String(str).replace(/[^a-zA-Z0-9_-]/g, function(c) {
+      return '_' + c.charCodeAt(0) + '_';
+    });
+  }
+
+  /* ===================================================
+     Confirm Delete (inline row)
+  =================================================== */
+  window.confirmDelete = function (id, name) {
+    // Remove any existing confirm row
+    var existingConfirm = document.getElementById('confirm-row');
+    if (existingConfirm) {
+      existingConfirm.parentNode.removeChild(existingConfirm);
+    }
+
+    // If clicking the same key that already has confirm, just return (it was removed)
+    if (pendingDeleteId === id) {
+      pendingDeleteId = null;
+      return;
+    }
+    pendingDeleteId = id;
+
+    var targetRow = document.getElementById('key-row-' + escapeAttr(id));
+    if (!targetRow) return;
+
+    var safeId   = JSON.stringify(id);
+    var safeName = escapeHtml(name || 'this key');
+
+    var confirmRow = document.createElement('tr');
+    confirmRow.id = 'confirm-row';
+    confirmRow.className = 'confirm-row';
+    confirmRow.innerHTML = [
+      '<td colspan="5">',
+      '  <div class="confirm-content">',
+      '    <span class="confirm-text">',
+      '      Are you sure you want to delete <strong>' + safeName + '</strong>? This action cannot be undone.',
+      '    </span>',
+      '    <div class="confirm-actions">',
+      '      <button class="btn btn-ghost btn-sm" onclick="cancelDelete()">Cancel</button>',
+      '      <button class="btn btn-danger btn-sm" id="confirmDeleteBtn" onclick="executeDelete(' + safeId + ')">Delete</button>',
+      '    </div>',
+      '  </div>',
+      '</td>'
+    ].join('');
+
+    targetRow.parentNode.insertBefore(confirmRow, targetRow.nextSibling);
+    confirmRow.querySelector('.btn-ghost').focus();
+  };
+
+  window.cancelDelete = function () {
+    var row = document.getElementById('confirm-row');
+    if (row) row.parentNode.removeChild(row);
+    pendingDeleteId = null;
+  };
+
+  window.executeDelete = async function (id) {
+    var btn = document.getElementById('confirmDeleteBtn');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<div class="spinner"></div> Deleting...';
+    }
+    try {
+      await api('DELETE', '/api/keys/' + encodeURIComponent(id));
+      await loadKeys();
+    } catch (e) {
+      // Restore confirm row with error
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Delete';
+      }
+      alert('Failed to delete key: ' + e.message);
+    }
+  };
+
+  /* ===================================================
+     Load Keys
+  =================================================== */
+  async function loadKeys() {
+    renderSkeleton();
+    try {
+      var result = await api('GET', '/api/keys');
+      renderKeys(result.keys || []);
+    } catch (e) {
+      var body = document.getElementById('keysTableBody');
+      body.innerHTML = [
+        '<tr><td colspan="5">',
+        '  <div class="empty-state">',
+        '    <p style="color: var(--danger)">Failed to load keys: ' + escapeHtml(e.message) + '</p>',
+        '  </div>',
+        '</td></tr>'
+      ].join('');
+    }
+  }
+
+  /* ===================================================
+     Create Key
+  =================================================== */
+  var currentNewKey = null;
+
+  window.createKey = async function () {
+    var nameInput = document.getElementById('newKeyName');
+    var name = nameInput.value.trim();
+    hideAlert('createError');
+
+    if (!name) {
+      showAlert('createError', 'Please enter a name for the API key.');
+      nameInput.focus();
+      return;
+    }
+
+    setButtonLoading('createKeyBtn', true, 'Creating...');
+    try {
+      var result = await api('POST', '/api/keys', { name: name });
+      currentNewKey = result.key;
+      nameInput.value = '';
+
+      // Show the banner
+      document.getElementById('newKeyValue').textContent = result.key;
+      document.getElementById('newKeyBanner').classList.add('visible');
+      document.getElementById('copyBtn').textContent = '';
+      document.getElementById('copyBtn').innerHTML = [
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">',
+        '  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>',
+        '  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+        '</svg>',
+        ' Copy'
+      ].join('');
+      document.getElementById('copyBtn').classList.remove('copied');
+
+      // Reload keys list in background
+      await loadKeys();
+    } catch (e) {
+      showAlert('createError', e.message || 'Failed to create key.');
+    } finally {
+      setButtonLoading('createKeyBtn', false, 'Create Key');
+    }
+  };
+
+  /* ===================================================
+     Copy New Key
+  =================================================== */
+  window.copyNewKey = function () {
+    if (!currentNewKey) return;
+    copyToClipboard(currentNewKey, 'copyBtn');
+  };
+
+  function copyToClipboard(text, btnId) {
+    var success = false;
+
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(function () {
+        markCopied(btnId);
+      }).catch(function () {
+        fallbackCopy(text, btnId);
+      });
+    } else {
+      fallbackCopy(text, btnId);
+    }
+  }
+
+  function fallbackCopy(text, btnId) {
+    var textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    textarea.style.top  = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    try {
+      document.execCommand('copy');
+      markCopied(btnId);
+    } catch(e) {}
+    document.body.removeChild(textarea);
+  }
+
+  function markCopied(btnId) {
+    var btn = document.getElementById(btnId);
+    if (!btn) return;
+    btn.classList.add('copied');
+    btn.innerHTML = [
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">',
+      '  <polyline points="20 6 9 17 4 12"/>',
+      '</svg>',
+      ' Copied!'
+    ].join('');
+    setTimeout(function () {
+      if (btn) {
+        btn.classList.remove('copied');
+        btn.innerHTML = [
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">',
+          '  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>',
+          '  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+          '</svg>',
+          ' Copy'
+        ].join('');
+      }
+    }, 2000);
+  }
+
+  /* ===================================================
+     Dismiss New Key Banner
+  =================================================== */
+  window.dismissNewKey = function () {
+    document.getElementById('newKeyBanner').classList.remove('visible');
+    currentNewKey = null;
+  };
+
+  /* ===================================================
+     Load Dashboard
+  =================================================== */
+  async function loadDashboard() {
+    showState('dashboardState');
+    await loadKeys();
+  }
+
+  /* ===================================================
+     Initial Auth Check
+  =================================================== */
+  async function init() {
+    showState('initLoading');
+    try {
+      var result = await api('GET', '/api/auth/check');
+      if (result.needs_setup) {
+        showState('setupState');
+        document.getElementById('setupPassword').focus();
+      } else if (!result.authenticated) {
+        showState('loginState');
+        document.getElementById('loginPassword').focus();
+      } else {
+        await loadDashboard();
+      }
+    } catch (e) {
+      // If we can't reach the API, show a helpful error over the init screen
+      var el = document.getElementById('initLoading');
+      el.innerHTML = [
+        '<div class="init-loading">',
+        '  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:32px;height:32px;color:var(--danger)">',
+        '    <circle cx="12" cy="12" r="10"/>',
+        '    <line x1="12" y1="8" x2="12" y2="12"/>',
+        '    <line x1="12" y1="16" x2="12.01" y2="16"/>',
+        '  </svg>',
+        '  <span style="color:var(--danger)">Unable to connect to Phantom server</span>',
+        '  <span style="font-size:12px;max-width:300px;text-align:center">' + escapeHtml(e.message) + '</span>',
+        '  <button class="btn btn-ghost btn-sm" onclick="location.reload()">Retry</button>',
+        '</div>'
+      ].join('');
+    }
+  }
+
+  // Kick it off
+  init();
+
+})();
+</script>
+</body>
+</html>
