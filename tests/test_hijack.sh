@@ -92,7 +92,6 @@ source "$PROJECT_ROOT/client/lib/hijack.sh"
 # ── Helper ─────────────────────────────────────────────────────────
 # Since phantom_hijack_exec uses exec, we test it by replacing exec with
 # a function that captures the environment instead of replacing the process.
-# We'll create a wrapper that captures env vars and the command.
 
 # Write a test helper script that prints env vars
 cat > "$TEST_TMP/capture_env.sh" <<'SCRIPT'
@@ -114,19 +113,25 @@ exec() {
     "$@"
 }
 
+# Mock nc to simulate proxy being reachable
+nc() {
+    # Simulate success for proxy check
+    return 0
+}
+
 # ── Tests ──────────────────────────────────────────────────────────
 echo -e "${BOLD}${CYAN}Test Suite: hijack.sh${NC}"
 echo "════════════════════════════════════════════"
 
 echo ""
-echo -e "${BOLD}phantom_hijack_exec - No auth (default)${NC}"
+echo -e "${BOLD}phantom_hijack_exec - HTTP CONNECT proxy (direct mode)${NC}"
 echo "────────────────────────────────────────"
 
-# Setup config with no auth
+# Setup config for direct mode with HTTP proxy
 phantom_config_init
-phantom_config_set "SOCKS_PORT" "1080"
-phantom_config_set "SOCKS_USER" ""
-phantom_config_set "SOCKS_PASS" ""
+phantom_config_set "SERVER_HOST" "10.0.0.1"
+phantom_config_set "HTTP_PROXY_PORT" "8080"
+phantom_config_set "CONNECTION_MODE" "direct"
 
 # Create shadow home so the check passes
 mkdir -p "$SHADOW_HOME"
@@ -134,18 +139,18 @@ mkdir -p "$SHADOW_HOME"
 # Capture environment from hijack exec
 output=$(phantom_hijack_exec "$TEST_TMP/capture_env.sh" 2>/dev/null || true)
 
-# Test: socks5h:// scheme is used (remote DNS)
-assert_contains "HTTP_PROXY uses socks5h:// scheme" "$output" "HTTP_PROXY=socks5h://"
-assert_contains "HTTPS_PROXY uses socks5h:// scheme" "$output" "HTTPS_PROXY=socks5h://"
-assert_contains "ALL_PROXY uses socks5h:// scheme" "$output" "ALL_PROXY=socks5h://"
+# Test: HTTP proxy URL format
+assert_contains "HTTP_PROXY uses http:// scheme" "$output" "HTTP_PROXY=http://"
+assert_contains "HTTPS_PROXY uses http:// scheme" "$output" "HTTPS_PROXY=http://"
+assert_contains "ALL_PROXY uses http:// scheme" "$output" "ALL_PROXY=http://"
 
 # Test: lowercase variants also set
-assert_contains "http_proxy (lowercase) is set" "$output" "http_proxy=socks5h://"
-assert_contains "https_proxy (lowercase) is set" "$output" "https_proxy=socks5h://"
-assert_contains "all_proxy (lowercase) is set" "$output" "all_proxy=socks5h://"
+assert_contains "http_proxy (lowercase) is set" "$output" "http_proxy=http://"
+assert_contains "https_proxy (lowercase) is set" "$output" "https_proxy=http://"
+assert_contains "all_proxy (lowercase) is set" "$output" "all_proxy=http://"
 
-# Test: proxy URL without auth
-assert_contains "Proxy URL is socks5h://127.0.0.1:1080 (no auth)" "$output" "socks5h://127.0.0.1:1080"
+# Test: proxy URL points to VPS host
+assert_contains "Proxy URL points to server host:port" "$output" "http://10.0.0.1:8080"
 
 # Test: NO_PROXY includes localhost
 assert_contains "NO_PROXY includes localhost" "$output" "NO_PROXY=localhost,127.0.0.1,::1"
@@ -155,34 +160,33 @@ assert_contains "no_proxy includes localhost" "$output" "no_proxy=localhost,127.
 assert_contains "HOME is set to SHADOW_HOME" "$output" "HOME=$SHADOW_HOME"
 
 echo ""
-echo -e "${BOLD}phantom_hijack_exec - With SOCKS5 auth${NC}"
-echo "────────────────────────────────────────"
-
-# Setup config with auth credentials
-phantom_config_set "SOCKS_PORT" "1080"
-phantom_config_set "SOCKS_USER" "dev01"
-phantom_config_set "SOCKS_PASS" "s3cret"
-
-output=$(phantom_hijack_exec "$TEST_TMP/capture_env.sh" 2>/dev/null || true)
-
-# Test: SOCKS5 auth credentials are included in proxy URL
-assert_contains "Proxy URL includes username" "$output" "dev01"
-assert_contains "Proxy URL includes password" "$output" "s3cret"
-assert_contains "Proxy URL format is socks5h://user:pass@host:port" "$output" "socks5h://dev01:s3cret@127.0.0.1:1080"
-
-echo ""
-echo -e "${BOLD}phantom_hijack_exec - Custom port${NC}"
+echo -e "${BOLD}phantom_hijack_exec - Custom HTTP proxy port${NC}"
 echo "────────────────────────────────────────"
 
 # Setup config with custom port
-phantom_config_set "SOCKS_PORT" "9090"
-phantom_config_set "SOCKS_USER" ""
-phantom_config_set "SOCKS_PASS" ""
+phantom_config_set "HTTP_PROXY_PORT" "9090"
 
 output=$(phantom_hijack_exec "$TEST_TMP/capture_env.sh" 2>/dev/null || true)
 
 # Test: custom port is used
-assert_contains "Custom SOCKS_PORT 9090 is used in proxy URL" "$output" "socks5h://127.0.0.1:9090"
+assert_contains "Custom HTTP_PROXY_PORT 9090 is used in proxy URL" "$output" "http://10.0.0.1:9090"
+
+echo ""
+echo -e "${BOLD}phantom_hijack_exec - Tunnel mode uses localhost${NC}"
+echo "────────────────────────────────────────"
+
+# Setup config for tunnel mode
+phantom_config_set "CONNECTION_MODE" "tunnel"
+phantom_config_set "HTTP_PROXY_PORT" "8080"
+
+output=$(phantom_hijack_exec "$TEST_TMP/capture_env.sh" 2>/dev/null || true)
+
+# Test: tunnel mode uses 127.0.0.1
+assert_contains "Tunnel mode proxy uses 127.0.0.1" "$output" "http://127.0.0.1:8080"
+
+# Reset to direct mode for remaining tests
+phantom_config_set "CONNECTION_MODE" "direct"
+phantom_config_set "HTTP_PROXY_PORT" "8080"
 
 echo ""
 echo -e "${BOLD}phantom_hijack_exec - No command error${NC}"
@@ -199,9 +203,6 @@ echo "────────────────────────�
 
 # Remove shadow home and verify it gets created
 rm -rf "$SHADOW_HOME"
-phantom_config_set "SOCKS_PORT" "1080"
-phantom_config_set "SOCKS_USER" ""
-phantom_config_set "SOCKS_PASS" ""
 
 # Reset HOME dotfiles for sandbox
 touch "$HOME/.gitconfig"

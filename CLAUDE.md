@@ -11,7 +11,7 @@ Phantom-CLI is a zero-config AI network wrapper that hijacks at the network laye
 ## Commands
 
 ```bash
-# Run all tests (79 tests across 4 suites)
+# Run all tests
 bash tests/run_all_tests.sh
 
 # Run a single test suite
@@ -23,7 +23,10 @@ bash tests/test_hijack.sh
 # Install locally (symlinks to /usr/local/bin/phantom)
 bash client/install.sh
 
-# Deploy server on VPS
+# Deploy server on VPS (one-click)
+curl -fsSL .../server/install.sh | bash
+
+# Or manually
 cd server && docker-compose up -d --build
 
 # Manage SOCKS5 users on VPS
@@ -34,13 +37,15 @@ docker exec phantom-server manage-users.sh list
 ## Architecture
 
 ```
-client/phantom          → Main CLI entry, subcommand router, init wizard
+client/phantom          → Main CLI entry, subcommand router (setup, auth, init, claude pass-through)
 client/lib/hijack.sh    → Core: sets HTTP_PROXY + shadow HOME, then exec's the command
 client/lib/sandbox.sh   → Creates ~/.phantom_env/ with symlinks (isolates .claude/ credentials)
 client/lib/tunnel.sh    → autossh SOCKS5 tunnel management (tunnel mode only)
 client/lib/config.sh    → KEY=VALUE config reader/writer (~/.phantom/config)
 client/lib/doctor.sh    → Diagnostics: deps, proxy reachability, DNS leak, conflict detection
+client/lib/auth.sh      → Credential sync from VPS (phantom auth sync/status)
 
+server/install.sh       → VPS one-click installer (Docker + HTTP proxy + Claude Code)
 server/Dockerfile       → Ubuntu 22.04 + Dante SOCKS5 + iptables
 server/entrypoint.sh    → iptables rate limiting (3/s burst 5 on :443) + danted startup
 server/danted.conf      → Dante SOCKS5 config with PAM username auth
@@ -50,6 +55,8 @@ server/manage-users.sh  → add/remove/list SOCKS5 users (system users with nolo
 **Two connection modes:**
 - `direct` (default): Client → VPS HTTP proxy (:8080) directly
 - `tunnel`: Client → SSH tunnel → localhost proxy (encrypted)
+
+**Default behavior:** `phantom` with no args launches `claude` in interactive mode. Args starting with `-` are passed through to claude (e.g., `phantom -p "hello"`).
 
 **Shadow sandbox** (`~/.phantom_env/`): Symlinks `.gitconfig`, `.ssh`, `.npmrc`, etc. from real HOME, but NEVER symlinks `.claude.json` or `.claude/` — these are isolated per-VPS-account credentials.
 
@@ -61,6 +68,7 @@ server/manage-users.sh  → add/remove/list SOCKS5 users (system users with nolo
 | `~/.phantom_env/` | Shadow sandbox HOME used during hijack |
 | `~/.phantom_env/.claude/` | Isolated Claude credentials (VPS subscription) |
 | `~/.phantom_env/.phantom_profile` | Sourced before command execution (custom env vars) |
+| `/opt/phantom-cli/` | Server installation directory on VPS |
 
 ## Testing Patterns
 

@@ -124,7 +124,7 @@ content=$(cat "$PHANTOM_CONFIG")
 assert_contains "Config has default SERVER_PORT=22" "$content" "SERVER_PORT=22"
 
 # Test: config file contains default SOCKS_PORT
-assert_contains "Config has default SOCKS_PORT=1080" "$content" "SOCKS_PORT=1080"
+assert_contains "Config has default HTTP_PROXY_PORT=8080" "$content" "HTTP_PROXY_PORT=8080"
 
 # Test: config file contains default SSH_KEY
 assert_contains "Config has default SSH_KEY=~/.ssh/id_rsa" "$content" "SSH_KEY=~/.ssh/id_rsa"

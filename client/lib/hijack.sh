@@ -30,7 +30,14 @@ phantom_hijack_exec() {
     # Verify HTTP proxy is reachable
     if ! nc -z -w 3 "$proxy_host" "$http_proxy_port" 2>/dev/null; then
         log_error "Cannot reach HTTP proxy at ${proxy_host}:${http_proxy_port}"
-        log_info "Ensure the HTTP CONNECT proxy is running on the VPS."
+        log_info "Possible fixes:"
+        if [ "$connection_mode" = "direct" ]; then
+            log_info "  1. Check VPS: ssh root@${server_host} systemctl status phantom-http-proxy"
+            log_info "  2. Restart proxy: ssh root@${server_host} systemctl restart phantom-http-proxy"
+        else
+            log_info "  1. Ensure tunnel is connected: phantom connect"
+        fi
+        log_info "  3. Run diagnostics: phantom doctor"
         return 1
     fi
 

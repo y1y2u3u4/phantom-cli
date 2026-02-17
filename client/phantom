@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-PHANTOM_VERSION="1.0.0"
+PHANTOM_VERSION="2.0.0"
 PHANTOM_DIR="$HOME/.phantom"
 PHANTOM_CONFIG="$PHANTOM_DIR/config"
 SHADOW_HOME="$HOME/.phantom_env"
@@ -37,6 +37,7 @@ source "$PHANTOM_LIB/tunnel.sh"
 source "$PHANTOM_LIB/sandbox.sh"
 source "$PHANTOM_LIB/hijack.sh"
 source "$PHANTOM_LIB/doctor.sh"
+source "$PHANTOM_LIB/auth.sh"
 
 # ── Usage ───────────────────────────────────────────────────────────
 phantom_usage() {
@@ -44,22 +45,28 @@ phantom_usage() {
 ${BOLD}Phantom CLI${NC} v${PHANTOM_VERSION} - Zero-config AI network wrapper
 
 ${BOLD}USAGE${NC}
-    phantom <command> [options]
+    phantom                       Launch Claude (interactive mode)
+    phantom [claude-args]         Pass arguments to Claude
+    phantom <command> [options]   Run a subcommand
 
 ${BOLD}COMMANDS${NC}
-    ${GREEN}init${NC}            Interactive setup wizard (VPS, credentials)
-    ${GREEN}connect${NC}         Establish SSH SOCKS5 tunnel
-    ${GREEN}disconnect${NC}      Tear down tunnel
-    ${GREEN}status${NC}          Show tunnel status and config
-    ${GREEN}doctor${NC}          Full diagnostic check
-    ${GREEN}<cmd> [args]${NC}    Hijack and execute command through proxy
+    ${GREEN}setup <IP> [--password P]${NC}   One-click configure (IP + sync credentials)
+    ${GREEN}auth sync [--password P]${NC}    Sync credentials from VPS
+    ${GREEN}auth status${NC}                 Check credential and connection status
+    ${GREEN}init${NC}                        Interactive setup wizard (advanced)
+    ${GREEN}connect${NC}                     Establish SSH SOCKS5 tunnel
+    ${GREEN}disconnect${NC}                  Tear down tunnel
+    ${GREEN}status${NC}                      Show connection status and config
+    ${GREEN}doctor${NC}                      Full diagnostic check
+    ${GREEN}<cmd> [args]${NC}                Hijack and execute command through proxy
 
 ${BOLD}EXAMPLES${NC}
-    phantom init                  # First-time setup
-    phantom connect               # Start tunnel
-    phantom claude                # Run claude through proxy
-    phantom npm install           # Run npm through proxy
-    phantom doctor                # Check everything works
+    phantom                             # Start Claude interactive mode
+    phantom -p "hello"                  # Single query (pass-through to Claude)
+    phantom setup 1.2.3.4               # One-click setup with VPS IP
+    phantom setup 1.2.3.4 --password X  # Setup with SSH password
+    phantom auth status                 # Check credentials
+    phantom doctor                      # Diagnostics
 
 ${BOLD}CONFIG${NC}
     ~/.phantom/config             # Configuration file
@@ -69,7 +76,132 @@ ${BOLD}CONFIG${NC}
 EOF
 }
 
-# ── Init command ────────────────────────────────────────────────────
+# ── Setup command (one-click) ──────────────────────────────────────
+phantom_setup() {
+    if [ $# -eq 0 ]; then
+        log_error "VPS IP is required."
+        log_info "Usage: phantom setup <VPS_IP> [--password PASSWORD]"
+        return 1
+    fi
+
+    local host="$1"
+    shift
+
+    local password=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --password)
+                password="$2"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    echo -e "${BOLD}Phantom Quick Setup${NC}"
+    echo "════════════════════════════════════════════"
+    echo ""
+
+    # Step 1: Detect HTTP proxy port
+    log_info "Detecting HTTP proxy on $host..."
+    local http_proxy_port=""
+    for port in 8080 8888 3128; do
+        if nc -z -w 3 "$host" "$port" 2>/dev/null; then
+            http_proxy_port="$port"
+            log_success "Found HTTP proxy on port $port"
+            break
+        fi
+    done
+
+    if [ -z "$http_proxy_port" ]; then
+        log_warn "No HTTP proxy detected on standard ports (8080, 8888, 3128)"
+        http_proxy_port="8080"
+        log_info "Using default port $http_proxy_port"
+    fi
+
+    # Step 2: Write config
+    log_info "Writing configuration..."
+    phantom_config_init
+    phantom_config_set "SERVER_HOST" "$host"
+    phantom_config_set "SERVER_PORT" "22"
+    phantom_config_set "HTTP_PROXY_PORT" "$http_proxy_port"
+    phantom_config_set "SSH_KEY" "~/.ssh/id_rsa"
+    phantom_config_set "CONNECTION_MODE" "direct"
+    phantom_config_set "AUTO_CONNECT" "true"
+    phantom_config_set "AUTO_RECONNECT" "true"
+    log_success "Config saved to $PHANTOM_CONFIG"
+
+    # Step 3: Create sandbox
+    log_info "Setting up shadow sandbox..."
+    phantom_sandbox_setup
+
+    # Step 4: Sync credentials from VPS
+    echo ""
+    log_info "Syncing credentials from VPS..."
+    local sync_args=()
+    if [ -n "$password" ]; then
+        sync_args+=(--password "$password")
+    fi
+    phantom_auth_sync "${sync_args[@]}" || log_warn "Credential sync failed. You can retry: phantom auth sync"
+
+    # Step 5: Verify proxy connection
+    echo ""
+    log_info "Verifying proxy connection..."
+    local proxy_url="http://${host}:${http_proxy_port}"
+    local proxy_ip
+    proxy_ip=$(curl -s --max-time 10 --proxy "$proxy_url" https://ifconfig.me 2>/dev/null || echo "")
+
+    if [ -n "$proxy_ip" ]; then
+        log_success "Proxy working! External IP: $proxy_ip"
+    else
+        log_warn "Could not verify proxy. It may still work for Claude."
+    fi
+
+    # Summary
+    echo ""
+    echo -e "${BOLD}${CYAN}════════════════════════════════════════════${NC}"
+    echo -e "${BOLD}${GREEN}Setup complete!${NC}"
+    echo -e "${BOLD}${CYAN}════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "  Server:  ${CYAN}${host}:${http_proxy_port}${NC}"
+    echo -e "  Sandbox: ${CYAN}${SHADOW_HOME}${NC}"
+    echo ""
+    echo -e "  ${BOLD}Quick start:${NC}"
+    echo -e "    ${GREEN}phantom${NC}              # Launch Claude (interactive)"
+    echo -e "    ${GREEN}phantom -p \"hello\"${NC}   # Single query"
+    echo -e "    ${GREEN}phantom auth status${NC}  # Check credentials"
+    echo -e "    ${GREEN}phantom doctor${NC}       # Full diagnostics"
+    echo ""
+}
+
+# ── Auth command router ────────────────────────────────────────────
+phantom_auth() {
+    if [ $# -eq 0 ]; then
+        phantom_auth_status
+        return
+    fi
+
+    local subcmd="$1"
+    shift
+
+    case "$subcmd" in
+        sync)
+            phantom_auth_sync "$@"
+            ;;
+        status)
+            phantom_auth_status "$@"
+            ;;
+        *)
+            log_error "Unknown auth command: $subcmd"
+            log_info "Usage: phantom auth [sync|status]"
+            return 1
+            ;;
+    esac
+}
+
+# ── Init command (interactive wizard, backward compatible) ─────────
 phantom_init() {
     echo -e "${BOLD}Phantom CLI Setup Wizard${NC}"
     echo "────────────────────────────────────────"
@@ -129,8 +261,7 @@ phantom_init() {
     log_success "Shadow sandbox created at $SHADOW_HOME"
 
     echo ""
-    log_info "Run ${GREEN}phantom connect${NC} to start the tunnel"
-    log_info "Then ${GREEN}phantom claude${NC} to use Claude through the proxy"
+    log_info "Run ${GREEN}phantom${NC} to start Claude through the proxy"
 }
 
 # ── Status command ──────────────────────────────────────────────────
@@ -140,7 +271,7 @@ phantom_status() {
 
     # Config check
     if [ ! -f "$PHANTOM_CONFIG" ]; then
-        log_warn "Not configured. Run: phantom init"
+        log_warn "Not configured. Run: phantom setup <VPS_IP>"
         return 1
     fi
 
@@ -170,28 +301,42 @@ phantom_status() {
 
 # ── Main router ─────────────────────────────────────────────────────
 main() {
+    # No arguments → default to launching claude
     if [ $# -eq 0 ]; then
-        phantom_usage
+        phantom_hijack_exec claude
         exit 0
     fi
 
     local cmd="$1"
-    shift
 
     case "$cmd" in
+        # Known subcommands → route to handler
+        setup)
+            shift
+            phantom_setup "$@"
+            ;;
+        auth)
+            shift
+            phantom_auth "$@"
+            ;;
         init)
+            shift
             phantom_init "$@"
             ;;
         connect)
+            shift
             phantom_tunnel_connect "$@"
             ;;
         disconnect)
+            shift
             phantom_tunnel_disconnect "$@"
             ;;
         status)
+            shift
             phantom_status "$@"
             ;;
         doctor)
+            shift
             phantom_doctor_run "$@"
             ;;
         help|--help|-h)
@@ -200,8 +345,13 @@ main() {
         version|--version|-v)
             echo "phantom v${PHANTOM_VERSION}"
             ;;
+        -*)
+            # Arguments starting with - → pass through to claude
+            phantom_hijack_exec claude "$@"
+            ;;
         *)
-            # Pass-through: hijack the command
+            # Everything else → hijack the command
+            shift
             phantom_hijack_exec "$cmd" "$@"
             ;;
     esac
