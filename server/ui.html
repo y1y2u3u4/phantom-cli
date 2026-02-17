@@ -1445,7 +1445,7 @@
     keys.forEach(function (key) {
       var created = formatDate(key.created_at);
       var lastUsed = key.last_used_at ? formatDate(key.last_used_at) : null;
-      var masked = maskKey(key.prefix, key.suffix);
+      var masked = key.masked_key || maskKey(key.prefix, key.suffix);
       var safeId = encodeURIComponent(key.id);
       var safeName = escapeHtml(key.name || 'Unnamed');
 
