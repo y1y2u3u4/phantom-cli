@@ -349,9 +349,14 @@ def connect_via_http_proxy(
         response += chunk
 
     status_line = response.split(b"\r\n")[0].decode(errors="replace")
-    if b"200" not in response.split(b"\r\n")[0]:
+    try:
+        status_code = int(status_line.split()[1])
+    except (IndexError, ValueError):
         sock.close()
-        raise ConnectionError(f"Upstream HTTP proxy rejected CONNECT: {status_line}")
+        raise ConnectionError(f"Upstream HTTP proxy returned invalid response: {status_line}")
+    if status_code != 200:
+        sock.close()
+        raise ConnectionError(f"Upstream HTTP proxy rejected CONNECT (status {status_code}): {status_line}")
 
     return sock
 
@@ -519,19 +524,23 @@ def resolve_account(key_record: dict | None, client_ip: str) -> dict | None:
 
         available = [a for a, q in scored if q > 0]
         if not available:
-            available = [scored[0][0]]
+            # All quotas exhausted: round-robin across all accounts evenly
+            available = [a for a, _ in scored]
+            log("WARNING: all account quotas exhausted, round-robin across all accounts")
 
         chosen = available[_account_round_robin_idx % len(available)]
         _account_round_robin_idx += 1
 
-    # Persist sticky assignment
+    # Persist sticky assignment (only if not already assigned)
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    if key_id:
-        assignments.setdefault("by_api_key", {})[key_id] = {
+    by_key = assignments.setdefault("by_api_key", {})
+    by_ip = assignments.setdefault("by_client_ip", {})
+    if key_id and key_id not in by_key:
+        by_key[key_id] = {
             "account_id": chosen["id"], "assigned_at": now, "reason": "round_robin",
         }
-    if client_ip:
-        assignments.setdefault("by_client_ip", {})[client_ip] = {
+    if client_ip and client_ip not in by_ip:
+        by_ip[client_ip] = {
             "account_id": chosen["id"], "assigned_at": now, "reason": "round_robin",
         }
     save_assignments(assignments)
@@ -819,10 +828,17 @@ def handle_connect(
 
     except Exception as exc:
         log(f"CONNECT tunnel error for {target}: {exc}")
+        exc_msg = str(exc).lower()
+        if "authentication" in exc_msg or "auth" in exc_msg:
+            status_line = b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\nUpstream proxy authentication failed\n"
+        elif "timed out" in exc_msg or "timeout" in exc_msg:
+            status_line = b"HTTP/1.1 504 Gateway Timeout\r\n\r\nUpstream connection timed out\n"
+        elif "refused" in exc_msg or "unreachable" in exc_msg:
+            status_line = b"HTTP/1.1 502 Bad Gateway\r\n\r\nUpstream proxy unreachable or target refused\n"
+        else:
+            status_line = b"HTTP/1.1 502 Bad Gateway\r\n\r\nCould not connect to target\n"
         try:
-            client_socket.sendall(
-                b"HTTP/1.1 502 Bad Gateway\r\n\r\nCould not connect to target\n"
-            )
+            client_socket.sendall(status_line)
         except Exception:
             pass
         try:
@@ -1452,6 +1468,10 @@ class PhantomHandler(BaseHTTPRequestHandler):
         if proxy_type not in ("direct", "http", "socks5"):
             self._send_json(400, {"error": "Invalid proxy type. Must be direct, http, or socks5"})
             return
+        if proxy_type != "direct":
+            if not proxy.get("host") or not proxy.get("port"):
+                self._send_json(400, {"error": "host and port are required for http/socks5 proxy"})
+                return
 
         quota = body.get("quota", {"monthly_limit_usd": 100.0, "reset_day": 1})
 
@@ -1503,9 +1523,14 @@ class PhantomHandler(BaseHTTPRequestHandler):
             found["name"] = body["name"].strip()
         if "upstream_proxy" in body:
             proxy = body["upstream_proxy"]
-            if proxy.get("type") not in ("direct", "http", "socks5"):
+            proxy_type = proxy.get("type", "direct")
+            if proxy_type not in ("direct", "http", "socks5"):
                 self._send_json(400, {"error": "Invalid proxy type"})
                 return
+            if proxy_type != "direct":
+                if not proxy.get("host") or not proxy.get("port"):
+                    self._send_json(400, {"error": "host and port are required for http/socks5 proxy"})
+                    return
             found["upstream_proxy"] = proxy
         if "quota" in body:
             found["quota"] = body["quota"]
@@ -1526,9 +1551,15 @@ class PhantomHandler(BaseHTTPRequestHandler):
             return
 
         accounts = load_accounts()
-        new_accounts = [a for a in accounts if a["id"] != acc_id]
+        deleted = None
+        new_accounts = []
+        for a in accounts:
+            if a["id"] == acc_id:
+                deleted = a
+            else:
+                new_accounts.append(a)
 
-        if len(new_accounts) == len(accounts):
+        if not deleted:
             self._send_json(404, {"error": "Account not found"})
             return
 
@@ -1541,6 +1572,15 @@ class PhantomHandler(BaseHTTPRequestHandler):
             for k in to_remove:
                 del mapping[k]
         save_assignments(assignments)
+
+        # Clean up credentials directory on disk
+        cred_dir = deleted.get("credentials_dir", "")
+        if cred_dir:
+            # Remove the account directory (parent of credentials/)
+            account_dir = os.path.dirname(cred_dir)
+            if account_dir and os.path.isdir(account_dir) and account_dir.startswith(ACCOUNTS_DIR):
+                shutil.rmtree(account_dir, ignore_errors=True)
+                log(f"Cleaned up credentials directory: {account_dir}")
 
         log(f"Account deleted: id={acc_id}")
         self._send_json(200, {"message": "Account deleted"})
@@ -1562,19 +1602,49 @@ class PhantomHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "Account not found"})
             return
 
+        # Allow custom target host/port via query params, default to api.anthropic.com:443
+        query = urlparse(self.path).query
+        params = parse_qs(query)
+        test_host = params.get("host", ["api.anthropic.com"])[0]
+        test_port = int(params.get("port", ["443"])[0])
+
         proxy = found.get("upstream_proxy", {"type": "direct"})
+        proxy_type = proxy.get("type", "direct")
+
+        # Use shorter timeout for test connections
+        original_timeout = 30
+        test_timeout = 10
         try:
-            # Test by connecting to api.anthropic.com:443
-            sock = connect_to_target("api.anthropic.com", 443, proxy)
+            if proxy_type == "direct":
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(test_timeout)
+                sock.connect((test_host, test_port))
+            elif proxy_type == "http":
+                sock = connect_via_http_proxy(
+                    test_host, test_port,
+                    proxy.get("host", ""), proxy.get("port", 0),
+                    proxy.get("username"), proxy.get("password"),
+                )
+                sock.settimeout(test_timeout)
+            elif proxy_type == "socks5":
+                sock = connect_via_socks5(
+                    test_host, test_port,
+                    proxy.get("host", ""), proxy.get("port", 0),
+                    proxy.get("username"), proxy.get("password"),
+                )
+                sock.settimeout(test_timeout)
+            else:
+                sock = connect_to_target(test_host, test_port, proxy)
+
             sock.close()
             self._send_json(200, {
                 "success": True,
-                "message": f"Successfully connected to api.anthropic.com:443 via {proxy.get('type', 'direct')} proxy",
+                "message": f"Successfully connected to {test_host}:{test_port} via {proxy_type} proxy",
             })
         except Exception as exc:
             self._send_json(200, {
                 "success": False,
-                "message": f"Connection failed: {exc}",
+                "message": f"Connection to {test_host}:{test_port} failed: {exc}",
             })
 
     def _handle_accounts_upload_credentials(self, acc_id: str) -> None:
