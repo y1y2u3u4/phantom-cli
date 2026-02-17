@@ -11,7 +11,7 @@ Phantom-CLI hijacks at the network layer (L4) via HTTP CONNECT proxy, enabling t
 SSH into your VPS and run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nicegongqing/phantom-cli/main/server/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/y1y2u3u4/phantom-cli/master/server/install.sh | bash
 ```
 
 This automatically installs Docker, builds the SOCKS5 container, deploys Phantom Server (proxy + API + management UI), and opens ports. You'll be prompted to set a **master password** during installation.
@@ -42,7 +42,7 @@ Log in with your master password, then create an API key. **Copy the key — it'
 
 ```bash
 # Install client
-curl -fsSL https://raw.githubusercontent.com/nicegongqing/phantom-cli/main/client/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/y1y2u3u4/phantom-cli/master/client/install.sh | bash
 
 # One-click configure with API key (recommended)
 phantom setup YOUR_VPS_IP --key sk-phantom-xxxx

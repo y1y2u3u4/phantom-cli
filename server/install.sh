@@ -7,7 +7,7 @@
 set -euo pipefail
 
 PHANTOM_DIR="/opt/phantom-cli"
-REPO_RAW="https://raw.githubusercontent.com/nicegongqing/phantom-cli/main"
+REPO_RAW="https://raw.githubusercontent.com/y1y2u3u4/phantom-cli/master"
 SERVER_PORT=8080
 
 # ── Colors ──────────────────────────────────────────────────────────
