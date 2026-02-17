@@ -134,3 +134,31 @@ export -f autossh
 - macOS-first: uses BSD `sed -i ''` syntax (not GNU `sed -i`)
 - `set -euo pipefail` in main entry point
 - Config tilde expansion: `${value/#\~/$HOME}`
+
+## Known Pitfalls
+
+**CONNECT proxy must NOT send duplicate 200 response.** `do_CONNECT()` uses `BaseHTTPRequestHandler.send_response()` which already sends the HTTP 200. The `handle_connect()` function must NOT send another 200 on the raw socket — doing so corrupts the TLS handshake (`ERR_SSL_PACKET_LENGTH_TOO_LONG`).
+
+**Large JSON through bash variables breaks.** Credential JSON (~14KB, containing OAuth tokens with special characters) cannot be stored in a bash variable and passed via `<<<` heredoc. Always pipe curl directly to python3: `curl ... | python3 -c "..."`.
+
+**Python 3.9 compatibility.** VPS may run Python 3.9 which lacks `str | None` union type syntax. Use `from __future__ import annotations` at top of all Python files.
+
+**`/api/auth/check` must return HTTP 200 for unauthenticated users.** The UI's fetch wrapper throws on non-2xx status. Return `{"authenticated": false, "needs_setup": bool}` with status 200, not 401.
+
+## Deployment
+
+**GitHub repo:** `https://github.com/y1y2u3u4/phantom-cli`
+
+**VPS update workflow:**
+```bash
+# From local: push to GitHub
+git push
+
+# On VPS: server files are at /opt/phantom-cli/ (not a git repo)
+# Use scp to update, then restart
+scp server/phantom_server.py root@VPS_IP:/opt/phantom-cli/
+scp server/ui.html root@VPS_IP:/opt/phantom-cli/
+ssh root@VPS_IP "systemctl restart phantom-http-proxy"
+```
+
+**VPS systemd service:** `phantom-http-proxy` runs `python3 /opt/phantom-cli/phantom_server.py 8080 /opt/phantom-cli/data`
