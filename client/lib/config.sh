@@ -27,6 +27,9 @@ SOCKS_PASS=
 # Options
 AUTO_CONNECT=true
 AUTO_RECONNECT=true
+
+# Connection mode: "tunnel" (SSH SOCKS5) or "direct" (Dante SOCKS5)
+CONNECTION_MODE=direct
 DEFAULTS
         log_info "Created default config at $PHANTOM_CONFIG"
     fi

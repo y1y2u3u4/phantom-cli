@@ -120,6 +120,16 @@ phantom_init() {
     echo ""
     local socks_pass="${input_socks_pass:-$current_socks_pass}"
 
+    # Connection mode
+    local current_mode
+    current_mode=$(phantom_config_get "CONNECTION_MODE" 2>/dev/null || echo "direct")
+    echo ""
+    echo "Connection mode:"
+    echo "  direct  - Connect to VPS SOCKS5 directly (simpler, recommended)"
+    echo "  tunnel  - SSH tunnel + local SOCKS5 (more secure)"
+    read -rp "Connection mode (direct/tunnel) [${current_mode}]: " input_mode
+    local connection_mode="${input_mode:-$current_mode}"
+
     # Auto-connect option
     local current_auto
     current_auto=$(phantom_config_get "AUTO_CONNECT" 2>/dev/null || echo "true")
@@ -133,6 +143,7 @@ phantom_init() {
     phantom_config_set "SSH_KEY" "$ssh_key"
     phantom_config_set "SOCKS_USER" "$socks_user"
     phantom_config_set "SOCKS_PASS" "$socks_pass"
+    phantom_config_set "CONNECTION_MODE" "$connection_mode"
     phantom_config_set "AUTO_CONNECT" "$auto_connect"
 
     echo ""
