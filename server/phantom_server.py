@@ -126,6 +126,7 @@ QUOTA_REJECT_THRESHOLD = 95.0     # reject new CONNECT when session OR weekly ut
 USAGE_QUERY_MIN_INTERVAL = 600    # 10 minutes minimum between queries
 USAGE_QUERY_MAX_INTERVAL = 1800   # 30 minutes maximum
 USAGE_QUERY_TMUX_TIMEOUT = 60     # seconds to wait for claude to render /usage
+USAGE_QUERY_TOTAL_TIMEOUT = 120   # max seconds for entire usage query per account
 CLAUDE_BIN = shutil.which("claude") or "/usr/local/bin/claude"
 
 # ── Global state (protected by locks) ────────────────────────────────────────
@@ -759,8 +760,8 @@ def _save_oauth_credentials(account: dict, oauth: dict) -> None:
         log(f"Warning: failed to save OAuth credentials: {exc}")
 
 
-def refresh_oauth_token(account: dict) -> dict | None:
-    """Refresh OAuth token for an account. Returns updated oauth dict or None."""
+def refresh_oauth_token(account: dict, max_retries: int = 3) -> dict | None:
+    """Refresh OAuth token with exponential backoff retry. Returns updated oauth dict or None."""
     oauth = _read_oauth_credentials(account)
     if not oauth or not oauth.get("refreshToken"):
         return None
@@ -772,42 +773,60 @@ def refresh_oauth_token(account: dict) -> dict | None:
         "scope": "user:inference user:profile user:sessions:claude_code",
     }).encode()
 
-    req = urllib.request.Request(
-        OAUTH_TOKEN_URL,
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": OAUTH_USER_AGENT,
-        },
-        method="POST",
-    )
+    last_error = ""
+    for attempt in range(max_retries):
+        req = urllib.request.Request(
+            OAUTH_TOKEN_URL,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": OAUTH_USER_AGENT,
+            },
+            method="POST",
+        )
 
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            result = json.loads(resp.read())
-
-        new_access = result.get("access_token")
-        new_refresh = result.get("refresh_token", oauth["refreshToken"])
-        expires_in = result.get("expires_in", 28800)
-
-        oauth["accessToken"] = new_access
-        oauth["refreshToken"] = new_refresh
-        oauth["expiresAt"] = int(time.time() * 1000) + expires_in * 1000
-
-        _save_oauth_credentials(account, oauth)
-        log(f"OAuth token refreshed for account {account.get('name', account['id'])}")
-        return oauth
-    except urllib.error.HTTPError as e:
-        body = ""
         try:
-            body = e.read().decode()[:200]
-        except Exception:
-            pass
-        log(f"OAuth token refresh failed for {account['id']}: HTTP {e.code} {body}")
-        return None
-    except Exception as exc:
-        log(f"OAuth token refresh failed for {account['id']}: {exc}")
-        return None
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                result = json.loads(resp.read())
+
+            new_access = result.get("access_token")
+            new_refresh = result.get("refresh_token", oauth["refreshToken"])
+            expires_in = result.get("expires_in", 28800)
+
+            oauth["accessToken"] = new_access
+            oauth["refreshToken"] = new_refresh
+            oauth["expiresAt"] = int(time.time() * 1000) + expires_in * 1000
+
+            _save_oauth_credentials(account, oauth)
+            if attempt > 0:
+                log(f"OAuth token refreshed for {account.get('name', account['id'])} (after {attempt + 1} attempts)")
+            else:
+                log(f"OAuth token refreshed for {account.get('name', account['id'])}")
+            return oauth
+
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode()[:200]
+            except Exception:
+                pass
+            last_error = f"HTTP {e.code} {body}"
+            # Don't retry on 4xx client errors (bad credentials, revoked token)
+            if 400 <= e.code < 500:
+                log(f"OAuth refresh failed for {account['id']}: {last_error} (not retryable)")
+                return None
+
+        except Exception as exc:
+            last_error = str(exc)
+
+        # Exponential backoff: 2s, 4s, 8s...
+        if attempt < max_retries - 1:
+            backoff = 2 ** (attempt + 1) + random.uniform(0, 1)
+            log(f"OAuth refresh attempt {attempt + 1} failed for {account['id']}: {last_error}. Retrying in {backoff:.1f}s")
+            time.sleep(backoff)
+
+    log(f"OAuth refresh failed for {account['id']} after {max_retries} attempts: {last_error}")
+    return None
 
 
 def get_valid_access_token(account: dict) -> str | None:
@@ -1077,6 +1096,69 @@ def _query_claude_usage(account: dict) -> dict | None:
             pass
 
 
+def _query_claude_usage_with_timeout(account: dict) -> dict | None:
+    """Wrapper: run _query_claude_usage in a thread with a total timeout."""
+    result_holder: list = [None]
+
+    def _worker():
+        result_holder[0] = _query_claude_usage(account)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=USAGE_QUERY_TOTAL_TIMEOUT)
+
+    if t.is_alive():
+        log(f"Usage query TIMEOUT for {account['id']} (>{USAGE_QUERY_TOTAL_TIMEOUT}s), killing")
+        # Kill tmux session to unblock the thread
+        sess_name = f"phantom_usage_{account['id']}"
+        tmux_bin = shutil.which("tmux")
+        if tmux_bin:
+            try:
+                subprocess.run([tmux_bin, "kill-session", "-t", sess_name],
+                               capture_output=True, timeout=5)
+            except Exception:
+                pass
+        return {"error": f"Query timed out after {USAGE_QUERY_TOTAL_TIMEOUT}s",
+                "session_pct": None, "weekly_all_pct": None,
+                "weekly_sonnet_pct": None, "weekly_opus_pct": None,
+                "session_resets": None, "weekly_all_resets": None, "extra_usage_enabled": False}
+
+    return result_holder[0]
+
+
+def _oauth_usage_fallback(account: dict) -> dict | None:
+    """Fallback: query usage via OAuth API when tmux/Claude method fails."""
+    usage_data = fetch_anthropic_usage(account)
+    if not usage_data:
+        return None
+
+    # Convert OAuth API format to our internal cache format
+    result: dict = {
+        "session_pct": None, "weekly_all_pct": None,
+        "weekly_sonnet_pct": None, "weekly_opus_pct": None,
+        "session_resets": None, "weekly_all_resets": None,
+        "extra_usage_enabled": False, "error": None,
+    }
+
+    for window_key, pct_key, resets_key in [
+        ("five_hour", "session_pct", "session_resets"),
+        ("seven_day", "weekly_all_pct", "weekly_all_resets"),
+    ]:
+        window = usage_data.get(window_key)
+        if isinstance(window, dict):
+            util = window.get("utilization")
+            if util is not None:
+                result[pct_key] = int(round(float(util)))
+            result[resets_key] = window.get("resets_at")
+
+    extra = usage_data.get("extra_usage")
+    if isinstance(extra, dict):
+        result["extra_usage_enabled"] = extra.get("is_enabled", False)
+
+    log(f"OAuth fallback for {account['id']}: session={result.get('session_pct')}% weekly={result.get('weekly_all_pct')}%")
+    return result
+
+
 def query_all_accounts_usage() -> dict:
     """Query usage for all active accounts. Returns {account_id: usage_dict}."""
     global _usage_query_running
@@ -1090,7 +1172,17 @@ def query_all_accounts_usage() -> dict:
         active = [a for a in accounts if a.get("status") == "active"]
         results = {}
         for account in active:
-            usage = _query_claude_usage(account)
+            # Primary: Claude Code tmux query (with timeout)
+            usage = _query_claude_usage_with_timeout(account)
+
+            # Fallback: OAuth API if tmux query failed or returned error
+            if not usage or usage.get("error"):
+                tmux_err = usage.get("error", "no result") if usage else "no result"
+                log(f"Tmux query failed for {account['id']} ({tmux_err}), trying OAuth fallback")
+                oauth_usage = _oauth_usage_fallback(account)
+                if oauth_usage and oauth_usage.get("session_pct") is not None:
+                    usage = oauth_usage
+
             if usage:
                 usage["queried_at"] = time.time()
                 with _claude_usage_lock:
@@ -1644,7 +1736,9 @@ class PhantomHandler(BaseHTTPRequestHandler):
             self.send_header("Retry-After", "5")
             self.end_headers()
             try:
-                self.wfile.write(b"Server busy, try again later\n")
+                msg = (f"Server at capacity ({_active_connections}/{MAX_GLOBAL_CONNECTIONS} tunnels). "
+                       f"Retry in ~5 seconds.\n")
+                self.wfile.write(msg.encode())
             except Exception:
                 pass
             return
@@ -1654,12 +1748,15 @@ class PhantomHandler(BaseHTTPRequestHandler):
         if acct_sem and not acct_sem.acquire(timeout=CONNECT_QUEUE_TIMEOUT):
             _global_semaphore.release()
             acct_count = _active_per_account.get(account_id, 0)
+            acct_name = account.get("name", account_id) if account else account_id
             log(f"CONNECT {target} from {client_ip} REJECTED: account {account_id} busy ({acct_count}/{MAX_PER_ACCOUNT_CONNECTIONS})")
             self.send_response(503, "Service Unavailable")
             self.send_header("Retry-After", "5")
             self.end_headers()
             try:
-                self.wfile.write(b"Account busy, try again later\n")
+                msg = (f"Account '{acct_name}' at capacity ({acct_count}/{MAX_PER_ACCOUNT_CONNECTIONS} tunnels). "
+                       f"Retry in ~5 seconds.\n")
+                self.wfile.write(msg.encode())
             except Exception:
                 pass
             return
