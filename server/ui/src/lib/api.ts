@@ -5,6 +5,7 @@ import type {
   KeyCreateResponse,
   AccountsListResponse,
   AccountCreateResponse,
+  AccountQuotaResponse,
   CreateAccountPayload,
   UpdateAccountPayload,
   TestResponse,
@@ -88,6 +89,8 @@ export const api = {
     request<MessageResponse>('DELETE', `/api/accounts/${encodeURIComponent(id)}`),
   testAccount: (id: string) =>
     request<TestResponse>('POST', `/api/accounts/${encodeURIComponent(id)}/test`),
+  getAccountQuota: (id: string) =>
+    request<AccountQuotaResponse>('GET', `/api/accounts/${encodeURIComponent(id)}/quota`),
   uploadCredentials: (id: string, files: Record<string, string>) =>
     request<MessageResponse>('POST', `/api/accounts/${encodeURIComponent(id)}/credentials`, {
       files,

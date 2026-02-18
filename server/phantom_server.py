@@ -28,6 +28,8 @@ import struct
 import sys
 import threading
 import time
+import urllib.request
+import urllib.error
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlparse
@@ -98,6 +100,16 @@ USAGE_FLUSH_INTERVAL = 60    # seconds between usage flushes
 QUOTA_CHECK_INTERVAL = 3600  # seconds between quota reset checks
 MAX_SESSIONS_PER_KEY = 100   # max session records per key per month
 
+# Anthropic OAuth constants
+OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+OAUTH_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
+OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+OAUTH_USER_AGENT = "claude-cli/2.1.44 (external, cli)"
+OAUTH_TOKEN_MARGIN = 300     # refresh token if expiring within 5 minutes
+OAUTH_USAGE_CACHE_TTL = 60   # cache usage API responses for 60 seconds
+OAUTH_PROFILE_CACHE_TTL = 300  # cache profile responses for 5 minutes
+
 # ── Global state (protected by locks) ────────────────────────────────────────
 
 _file_lock = threading.Lock()
@@ -107,6 +119,7 @@ _rate_limit: dict = {}        # {ip: [timestamp, ...]}
 _rate_limit_lock = threading.Lock()
 _assignments_lock = threading.Lock()
 _account_round_robin_idx = 0
+_oauth_cache: dict = {}       # {account_id: {"usage": {...}, "usage_at": float, "profile": {...}, "profile_at": float}}
 
 
 # ── Utility: logging ─────────────────────────────────────────────────────────
@@ -584,6 +597,288 @@ def estimate_remaining_quota(account: dict) -> float:
             total_estimated += data.get("estimated_cost_usd", 0.0)
 
     return max(0.0, limit - total_estimated)
+
+
+# ── Anthropic OAuth token & usage API ────────────────────────────────────────
+
+def _read_oauth_credentials(account: dict) -> dict | None:
+    """Read OAuth credentials from account's credentials_dir."""
+    cred_dir = account.get("credentials_dir", "")
+    if not cred_dir:
+        return None
+    cred_path = os.path.join(cred_dir, ".claude", ".credentials.json")
+    try:
+        with open(cred_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("claudeAiOauth")
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        return None
+
+
+def _save_oauth_credentials(account: dict, oauth: dict) -> None:
+    """Save updated OAuth credentials back to the credentials file."""
+    cred_dir = account.get("credentials_dir", "")
+    if not cred_dir:
+        return
+    cred_path = os.path.join(cred_dir, ".claude", ".credentials.json")
+    try:
+        with open(cred_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        data["claudeAiOauth"] = oauth
+        tmp = cred_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, cred_path)
+    except Exception as exc:
+        log(f"Warning: failed to save OAuth credentials: {exc}")
+
+
+def refresh_oauth_token(account: dict) -> dict | None:
+    """Refresh OAuth token for an account. Returns updated oauth dict or None."""
+    oauth = _read_oauth_credentials(account)
+    if not oauth or not oauth.get("refreshToken"):
+        return None
+
+    payload = json.dumps({
+        "grant_type": "refresh_token",
+        "refresh_token": oauth["refreshToken"],
+        "client_id": OAUTH_CLIENT_ID,
+        "scope": "user:inference user:profile user:sessions:claude_code",
+    }).encode()
+
+    req = urllib.request.Request(
+        OAUTH_TOKEN_URL,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": OAUTH_USER_AGENT,
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read())
+
+        new_access = result.get("access_token")
+        new_refresh = result.get("refresh_token", oauth["refreshToken"])
+        expires_in = result.get("expires_in", 28800)
+
+        oauth["accessToken"] = new_access
+        oauth["refreshToken"] = new_refresh
+        oauth["expiresAt"] = int(time.time() * 1000) + expires_in * 1000
+
+        _save_oauth_credentials(account, oauth)
+        log(f"OAuth token refreshed for account {account.get('name', account['id'])}")
+        return oauth
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode()[:200]
+        except Exception:
+            pass
+        log(f"OAuth token refresh failed for {account['id']}: HTTP {e.code} {body}")
+        return None
+    except Exception as exc:
+        log(f"OAuth token refresh failed for {account['id']}: {exc}")
+        return None
+
+
+def get_valid_access_token(account: dict) -> str | None:
+    """Get a valid OAuth access token, refreshing if expired or expiring soon."""
+    oauth = _read_oauth_credentials(account)
+    if not oauth:
+        return None
+
+    expires_at = oauth.get("expiresAt", 0)
+    now_ms = int(time.time() * 1000)
+
+    if now_ms + OAUTH_TOKEN_MARGIN * 1000 < expires_at:
+        return oauth.get("accessToken")
+
+    # Token expired or expiring soon — refresh
+    refreshed = refresh_oauth_token(account)
+    if refreshed:
+        return refreshed.get("accessToken")
+    return None
+
+
+def fetch_anthropic_usage(account: dict) -> dict | None:
+    """Query Anthropic OAuth usage API. Returns usage dict or None. Cached for 60s."""
+    acc_id = account["id"]
+    cache = _oauth_cache.get(acc_id, {})
+    cached_usage = cache.get("usage")
+    cached_at = cache.get("usage_at", 0)
+
+    if cached_usage is not None and time.time() - cached_at < OAUTH_USAGE_CACHE_TTL:
+        return cached_usage
+
+    token = get_valid_access_token(account)
+    if not token:
+        return None
+
+    req = urllib.request.Request(
+        OAUTH_USAGE_URL,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": OAUTH_USER_AGENT,
+            "anthropic-beta": "oauth-2025-04-20",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read())
+
+        if acc_id not in _oauth_cache:
+            _oauth_cache[acc_id] = {}
+        _oauth_cache[acc_id]["usage"] = result
+        _oauth_cache[acc_id]["usage_at"] = time.time()
+        return result
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode()[:200]
+        except Exception:
+            pass
+        log(f"Anthropic usage API failed for {acc_id}: HTTP {e.code} {body}")
+        return None
+    except Exception as exc:
+        log(f"Anthropic usage API failed for {acc_id}: {exc}")
+        return None
+
+
+def fetch_anthropic_profile(account: dict) -> dict | None:
+    """Query Anthropic profile API. Returns profile dict or None. Cached for 5min."""
+    acc_id = account["id"]
+    cache = _oauth_cache.get(acc_id, {})
+    cached_profile = cache.get("profile")
+    cached_at = cache.get("profile_at", 0)
+
+    if cached_profile is not None and time.time() - cached_at < OAUTH_PROFILE_CACHE_TTL:
+        return cached_profile
+
+    token = get_valid_access_token(account)
+    if not token:
+        return None
+
+    req = urllib.request.Request(
+        OAUTH_PROFILE_URL,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": OAUTH_USER_AGENT,
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read())
+
+        if acc_id not in _oauth_cache:
+            _oauth_cache[acc_id] = {}
+        _oauth_cache[acc_id]["profile"] = result
+        _oauth_cache[acc_id]["profile_at"] = time.time()
+        return result
+    except Exception as exc:
+        log(f"Anthropic profile API failed for {acc_id}: {exc}")
+        return None
+
+
+def _format_resets_in(resets_at_str: str | None) -> str | None:
+    """Convert ISO 8601 timestamp to human-readable 'resets in X' string."""
+    if not resets_at_str:
+        return None
+    try:
+        # Parse ISO 8601 with timezone
+        resets_at_str = resets_at_str.replace("+00:00", "Z").replace("+0000", "Z")
+        if resets_at_str.endswith("Z"):
+            # Remove fractional seconds if present
+            base = resets_at_str.rstrip("Z").split(".")[0]
+            resets_ts = time.mktime(time.strptime(base, "%Y-%m-%dT%H:%M:%S")) - time.timezone
+        else:
+            return None
+        diff = resets_ts - time.time()
+        if diff <= 0:
+            return "now"
+        hours = int(diff // 3600)
+        minutes = int((diff % 3600) // 60)
+        if hours >= 24:
+            days = hours // 24
+            hours = hours % 24
+            return f"{days}d {hours}h"
+        if hours > 0:
+            return f"{hours}h {minutes}m"
+        return f"{minutes}m"
+    except Exception:
+        return None
+
+
+def build_quota_response(account: dict) -> dict:
+    """Build a complete quota response for an account from Anthropic APIs."""
+    cred_dir = account.get("credentials_dir", "")
+    has_credentials = bool(cred_dir) and any(
+        os.path.exists(os.path.join(cred_dir, rp))
+        for rp in CREDENTIAL_REL_PATHS
+    )
+
+    base = {
+        "subscription_type": None,
+        "five_hour": None,
+        "seven_day": None,
+        "seven_day_opus": None,
+        "seven_day_sonnet": None,
+        "extra_usage": None,
+        "has_credentials": has_credentials,
+        "error": None,
+    }
+
+    if not has_credentials:
+        base["error"] = "No OAuth credentials found"
+        return base
+
+    # Fetch usage
+    usage = fetch_anthropic_usage(account)
+    if usage is None:
+        base["error"] = "Failed to query Anthropic usage API (token may be invalid)"
+        return base
+
+    # Format each limit
+    for key in ("five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"):
+        limit_data = usage.get(key)
+        if limit_data and isinstance(limit_data, dict) and limit_data.get("utilization") is not None:
+            base[key] = {
+                "utilization": limit_data["utilization"],
+                "resets_at": limit_data.get("resets_at"),
+                "resets_in": _format_resets_in(limit_data.get("resets_at")),
+            }
+
+    extra = usage.get("extra_usage")
+    if extra and isinstance(extra, dict):
+        base["extra_usage"] = {
+            "is_enabled": extra.get("is_enabled", False),
+            "utilization": extra.get("utilization"),
+        }
+
+    # Fetch profile for subscription type
+    profile = fetch_anthropic_profile(account)
+    if profile:
+        org = profile.get("organization", {})
+        org_type = org.get("organization_type", "")
+        if "max" in org_type:
+            base["subscription_type"] = "max"
+        elif "pro" in org_type:
+            base["subscription_type"] = "pro"
+        elif "enterprise" in org_type:
+            base["subscription_type"] = "enterprise"
+        elif "team" in org_type:
+            base["subscription_type"] = "team"
+        else:
+            base["subscription_type"] = org_type or None
+
+    return base
 
 
 # ── Usage tracker (batched writes) ───────────────────────────────────────────
@@ -1092,6 +1387,12 @@ class PhantomHandler(BaseHTTPRequestHandler):
             if len(parts) == 2 and parts[1] == "credentials":
                 return self._handle_accounts_upload_credentials(acc_id)
 
+        if method == "GET" and path.startswith("/api/accounts/"):
+            parts = path[len("/api/accounts/"):].split("/")
+            acc_id = parts[0]
+            if len(parts) == 2 and parts[1] == "quota":
+                return self._handle_account_quota(acc_id)
+
         if method == "POST" and path.startswith("/api/accounts/"):
             parts = path[len("/api/accounts/"):].split("/")
             acc_id = parts[0]
@@ -1435,14 +1736,38 @@ class PhantomHandler(BaseHTTPRequestHandler):
                 for rp in CREDENTIAL_REL_PATHS
             ) if cred_dir else False
 
+            # Build quick quota summary from cache (non-blocking)
+            real_quota = None
+            cache = _oauth_cache.get(a["id"], {})
+            cached_usage = cache.get("usage")
+            cached_profile = cache.get("profile")
+            if cached_usage:
+                rq: dict = {"subscription_type": None, "five_hour_pct": None, "seven_day_pct": None, "error": None}
+                fh = cached_usage.get("five_hour")
+                sd = cached_usage.get("seven_day")
+                if fh and isinstance(fh, dict):
+                    rq["five_hour_pct"] = fh.get("utilization")
+                if sd and isinstance(sd, dict):
+                    rq["seven_day_pct"] = sd.get("utilization")
+                if cached_profile:
+                    org_type = cached_profile.get("organization", {}).get("organization_type", "")
+                    if "max" in org_type:
+                        rq["subscription_type"] = "max"
+                    elif "pro" in org_type:
+                        rq["subscription_type"] = "pro"
+                    elif "enterprise" in org_type:
+                        rq["subscription_type"] = "enterprise"
+                    elif "team" in org_type:
+                        rq["subscription_type"] = "team"
+                real_quota = rq
+
             result.append({
                 "id": a["id"],
                 "name": a.get("name", ""),
                 "status": a.get("status", "active"),
                 "upstream_proxy": masked_proxy,
                 "has_credentials": has_credentials,
-                "quota": a.get("quota", {}),
-                "estimated_remaining_usd": round(estimate_remaining_quota(a), 4),
+                "real_quota": real_quota,
                 "created_at": a.get("created_at"),
                 "updated_at": a.get("updated_at"),
             })
@@ -1544,6 +1869,26 @@ class PhantomHandler(BaseHTTPRequestHandler):
         save_accounts(accounts)
         log(f"Account updated: id={acc_id}")
         self._send_json(200, {"message": "Account updated"})
+
+    def _handle_account_quota(self, acc_id: str) -> None:
+        """Return real Anthropic quota data for an account."""
+        if not self._is_authenticated():
+            self._send_json(401, {"error": "Unauthorized"})
+            return
+
+        accounts = load_accounts()
+        found = None
+        for a in accounts:
+            if a["id"] == acc_id:
+                found = a
+                break
+
+        if not found:
+            self._send_json(404, {"error": "Account not found"})
+            return
+
+        result = build_quota_response(found)
+        self._send_json(200, result)
 
     def _handle_accounts_delete(self, acc_id: str) -> None:
         if not self._is_authenticated():

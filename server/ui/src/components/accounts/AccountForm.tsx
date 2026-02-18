@@ -23,8 +23,6 @@ export function AccountForm({ open, onClose, onSaved, editing }: AccountFormProp
     host: editing?.upstream_proxy?.host || '',
     port: editing?.upstream_proxy?.port || 0,
   });
-  const [limitUsd, setLimitUsd] = useState(editing?.quota?.monthly_limit_usd?.toString() || '100');
-  const [resetDay, setResetDay] = useState(editing?.quota?.reset_day?.toString() || '1');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -38,7 +36,6 @@ export function AccountForm({ open, onClose, onSaved, editing }: AccountFormProp
       const payload = {
         name: name.trim(),
         upstream_proxy: proxy,
-        quota: { monthly_limit_usd: parseFloat(limitUsd) || 100, reset_day: parseInt(resetDay) || 1 },
       };
       if (editing) {
         await api.updateAccount(editing.id, payload);
@@ -63,13 +60,7 @@ export function AccountForm({ open, onClose, onSaved, editing }: AccountFormProp
           <h3 className="text-sm font-medium text-text-primary mb-2">Upstream Proxy</h3>
           <ProxyConfig value={proxy} onChange={setProxy} />
         </div>
-        <div>
-          <h3 className="text-sm font-medium text-text-primary mb-2">Quota</h3>
-          <div className="grid grid-cols-2 gap-3">
-            <Input label="Monthly limit (USD)" type="number" value={limitUsd} onChange={(e) => setLimitUsd(e.target.value)} placeholder="100" />
-            <Input label="Reset day" type="number" value={resetDay} onChange={(e) => setResetDay(e.target.value)} placeholder="1" />
-          </div>
-        </div>
+        <p className="text-xs text-text-secondary">Quota is determined by your Anthropic subscription (5h session + 7d weekly limits). Upload credentials after creating the account.</p>
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="ghost" type="button" onClick={onClose}>Cancel</Button>
           <Button type="submit" loading={loading}>{editing ? 'Save' : 'Create'}</Button>

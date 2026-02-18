@@ -50,9 +50,28 @@ export interface UpstreamProxyInput {
   password?: string;
 }
 
-export interface Quota {
-  monthly_limit_usd?: number;
-  reset_day?: number;
+export interface RealQuota {
+  subscription_type: string | null;
+  five_hour_pct: number | null;
+  seven_day_pct: number | null;
+  error: string | null;
+}
+
+export interface QuotaLimit {
+  utilization: number;
+  resets_at: string | null;
+  resets_in: string | null;
+}
+
+export interface AccountQuotaResponse {
+  subscription_type: string | null;
+  five_hour: QuotaLimit | null;
+  seven_day: QuotaLimit | null;
+  seven_day_opus: QuotaLimit | null;
+  seven_day_sonnet: QuotaLimit | null;
+  extra_usage: { is_enabled: boolean; utilization: number | null } | null;
+  has_credentials: boolean;
+  error: string | null;
 }
 
 export interface Account {
@@ -61,8 +80,7 @@ export interface Account {
   status: 'active' | 'exhausted' | 'disabled';
   upstream_proxy: UpstreamProxy;
   has_credentials: boolean;
-  quota: Quota;
-  estimated_remaining_usd: number;
+  real_quota: RealQuota | null;
   created_at: string;
   updated_at: string;
 }
@@ -80,13 +98,11 @@ export interface AccountCreateResponse {
 export interface CreateAccountPayload {
   name: string;
   upstream_proxy?: UpstreamProxyInput;
-  quota?: Quota;
 }
 
 export interface UpdateAccountPayload {
   name?: string;
   upstream_proxy?: UpstreamProxyInput;
-  quota?: Quota;
   status?: 'active' | 'exhausted' | 'disabled';
 }
 
