@@ -21,10 +21,13 @@ import base64
 import hashlib
 import json
 import os
+import random
+import re
 import secrets
 import shutil
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -110,6 +113,18 @@ OAUTH_TOKEN_MARGIN = 300     # refresh token if expiring within 5 minutes
 OAUTH_USAGE_CACHE_TTL = 60   # cache usage API responses for 60 seconds
 OAUTH_PROFILE_CACHE_TTL = 300  # cache profile responses for 5 minutes
 
+# Concurrency control
+MAX_GLOBAL_CONNECTIONS = 50       # max concurrent CONNECT tunnels
+MAX_PER_ACCOUNT_CONNECTIONS = 10  # max concurrent tunnels per account
+CONNECT_QUEUE_TIMEOUT = 30        # seconds to wait in queue before 503
+STICKY_BREAK_THRESHOLD = 80.0     # break sticky session when five_hour utilization >= this %
+
+# Claude Code usage query via tmux
+USAGE_QUERY_MIN_INTERVAL = 600    # 10 minutes minimum between queries
+USAGE_QUERY_MAX_INTERVAL = 1800   # 30 minutes maximum
+USAGE_QUERY_TMUX_TIMEOUT = 60     # seconds to wait for claude to render /usage
+CLAUDE_BIN = shutil.which("claude") or "/usr/local/bin/claude"
+
 # ── Global state (protected by locks) ────────────────────────────────────────
 
 _file_lock = threading.Lock()
@@ -120,6 +135,22 @@ _rate_limit_lock = threading.Lock()
 _assignments_lock = threading.Lock()
 _account_round_robin_idx = 0
 _oauth_cache: dict = {}       # {account_id: {"usage": {...}, "usage_at": float, "profile": {...}, "profile_at": float}}
+
+# Concurrency control state
+_global_semaphore = threading.Semaphore(MAX_GLOBAL_CONNECTIONS)
+_account_semaphores: dict = {}    # {account_id: threading.Semaphore}
+_account_semaphores_lock = threading.Lock()
+_active_connections = 0           # current global active tunnels
+_active_per_account: dict = {}    # {account_id: int}
+_connections_lock = threading.Lock()
+
+# Claude Code usage query cache
+# {account_id: {"session_pct": int, "weekly_all_pct": int, "weekly_sonnet_pct": int|None,
+#               "weekly_opus_pct": int|None, "session_resets": str, "weekly_all_resets": str,
+#               "extra_usage_enabled": bool, "queried_at": float, "error": str|None}}
+_claude_usage_cache: dict = {}
+_claude_usage_lock = threading.Lock()
+_usage_query_running = False       # prevent concurrent queries
 
 
 # ── Utility: logging ─────────────────────────────────────────────────────────
@@ -487,6 +518,70 @@ def connect_to_target(
         raise ValueError(f"Unknown upstream proxy type: {proxy_type}")
 
 
+# ── Concurrency helpers ───────────────────────────────────────────────────────
+
+def _get_account_semaphore(account_id: str) -> threading.Semaphore:
+    """Get or create a per-account semaphore (lazy init)."""
+    if account_id not in _account_semaphores:
+        with _account_semaphores_lock:
+            if account_id not in _account_semaphores:
+                _account_semaphores[account_id] = threading.Semaphore(MAX_PER_ACCOUNT_CONNECTIONS)
+    return _account_semaphores[account_id]
+
+
+def _track_connection(account_id: str | None, delta: int) -> None:
+    """Adjust active connection counters. delta=+1 on acquire, -1 on release."""
+    global _active_connections
+    with _connections_lock:
+        _active_connections = max(0, _active_connections + delta)
+        if account_id:
+            cur = _active_per_account.get(account_id, 0)
+            _active_per_account[account_id] = max(0, cur + delta)
+
+
+def _get_connection_stats() -> dict:
+    """Return current connection statistics."""
+    with _connections_lock:
+        return {
+            "active": _active_connections,
+            "max": MAX_GLOBAL_CONNECTIONS,
+            "per_account": dict(_active_per_account),
+            "per_account_max": MAX_PER_ACCOUNT_CONNECTIONS,
+        }
+
+
+# ── Quota-aware scoring ──────────────────────────────────────────────────────
+
+def _get_account_load_score(account: dict) -> float:
+    """
+    Score an account by availability. Higher = more capacity available.
+    Uses cached Claude Code /usage data, falls back to local estimation.
+    """
+    cached = get_cached_claude_usage(account["id"])
+
+    if cached and cached.get("session_pct") is not None:
+        return 100.0 - float(cached["session_pct"])
+    if cached and cached.get("weekly_all_pct") is not None:
+        return 100.0 - float(cached["weekly_all_pct"])
+
+    # Fallback: local USD estimation (returns inf when no limit set)
+    remaining = estimate_remaining_quota(account)
+    if remaining == float("inf"):
+        return 100.0  # no limit configured → full capacity
+    return min(100.0, remaining)
+
+
+def _is_account_overloaded(account: dict) -> bool:
+    """Check if an account's session utilization exceeds the sticky-break threshold."""
+    cached = get_cached_claude_usage(account["id"])
+    if not cached:
+        return False
+    session_pct = cached.get("session_pct")
+    if session_pct is not None:
+        return float(session_pct) >= STICKY_BREAK_THRESHOLD
+    return False
+
+
 # ── Account resolution & sticky sessions ─────────────────────────────────────
 
 def resolve_account(key_record: dict | None, client_ip: str) -> dict | None:
@@ -514,50 +609,59 @@ def resolve_account(key_record: dict | None, client_ip: str) -> dict | None:
             if a["id"] == key_record["account_id"]:
                 return a
 
-    # 2. Sticky assignment lookup
+    # 2. Sticky assignment lookup (with overload break)
     assignments = load_assignments()
     key_id = key_record["id"] if key_record else None
 
+    sticky_account = None
     if key_id and key_id in assignments.get("by_api_key", {}):
         assigned_id = assignments["by_api_key"][key_id]["account_id"]
         for a in active:
             if a["id"] == assigned_id:
-                return a
+                sticky_account = a
+                break
 
-    if client_ip in assignments.get("by_client_ip", {}):
+    if not sticky_account and client_ip in assignments.get("by_client_ip", {}):
         assigned_id = assignments["by_client_ip"][client_ip]["account_id"]
         for a in active:
             if a["id"] == assigned_id:
-                return a
+                sticky_account = a
+                break
 
-    # 3. Round-robin with quota awareness
+    if sticky_account and not _is_account_overloaded(sticky_account):
+        return sticky_account
+
+    if sticky_account:
+        log(f"Breaking sticky session: account {sticky_account['id']} overloaded (>={STICKY_BREAK_THRESHOLD}%)")
+
+    # 3. Round-robin with real quota awareness
     with _assignments_lock:
-        scored = [(a, estimate_remaining_quota(a)) for a in active]
+        scored = [(a, _get_account_load_score(a)) for a in active]
         scored.sort(key=lambda x: x[1], reverse=True)
 
         available = [a for a, q in scored if q > 0]
         if not available:
-            # All quotas exhausted: round-robin across all accounts evenly
             available = [a for a, _ in scored]
             log("WARNING: all account quotas exhausted, round-robin across all accounts")
 
         chosen = available[_account_round_robin_idx % len(available)]
         _account_round_robin_idx += 1
 
-    # Persist sticky assignment (only if not already assigned)
+    # Persist sticky assignment (update if broken, create if new)
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    reason = "rebalance" if sticky_account else "round_robin"
     by_key = assignments.setdefault("by_api_key", {})
     by_ip = assignments.setdefault("by_client_ip", {})
-    if key_id and key_id not in by_key:
+    if key_id:
         by_key[key_id] = {
-            "account_id": chosen["id"], "assigned_at": now, "reason": "round_robin",
+            "account_id": chosen["id"], "assigned_at": now, "reason": reason,
         }
-    if client_ip and client_ip not in by_ip:
+    if client_ip:
         by_ip[client_ip] = {
-            "account_id": chosen["id"], "assigned_at": now, "reason": "round_robin",
+            "account_id": chosen["id"], "assigned_at": now, "reason": reason,
         }
     save_assignments(assignments)
-    log(f"Auto-assigned account {chosen['id']} ({chosen.get('name', '?')}) for key={key_id} ip={client_ip}")
+    log(f"Auto-assigned account {chosen['id']} ({chosen.get('name', '?')}) for key={key_id} ip={client_ip} reason={reason}")
 
     return chosen
 
@@ -816,15 +920,195 @@ def _format_resets_in(resets_at_str: str | None) -> str | None:
         return None
 
 
+# ── Claude Code /usage query via tmux ────────────────────────────────────────
+
+def _parse_usage_output(text: str) -> dict:
+    """Parse the text output of Claude Code's /usage command."""
+    result: dict = {
+        "session_pct": None, "weekly_all_pct": None,
+        "weekly_sonnet_pct": None, "weekly_opus_pct": None,
+        "session_resets": None, "weekly_all_resets": None,
+        "extra_usage_enabled": False, "error": None,
+    }
+
+    patterns = [
+        (r"Current session.*?(\d+)%\s*used", "session_pct"),
+        (r"Current week \(all models\).*?(\d+)%\s*used", "weekly_all_pct"),
+        (r"Current week \(Sonnet only\).*?(\d+)%\s*used", "weekly_sonnet_pct"),
+        (r"Current week \(Opus only\).*?(\d+)%\s*used", "weekly_opus_pct"),
+    ]
+    for pattern, key in patterns:
+        m = re.search(pattern, text, re.DOTALL)
+        if m:
+            result[key] = int(m.group(1))
+
+    reset_patterns = [
+        (r"Current session.*?Resets\s+(.+?)(?:\n|$)", "session_resets"),
+        (r"Current week \(all models\).*?Resets\s+(.+?)(?:\n|$)", "weekly_all_resets"),
+    ]
+    for pattern, key in reset_patterns:
+        m = re.search(pattern, text, re.DOTALL)
+        if m:
+            result[key] = m.group(1).strip()
+
+    if "not enabled" in text.lower():
+        result["extra_usage_enabled"] = False
+    elif "extra usage" in text.lower() and "not enabled" not in text.lower():
+        result["extra_usage_enabled"] = True
+
+    return result
+
+
+def _query_claude_usage(account: dict) -> dict | None:
+    """
+    Query usage for an account by spawning Claude Code in a tmux session.
+    Uses the account's credentials_dir as HOME so Claude reads the right credentials.
+    Returns parsed usage dict or None on failure.
+    """
+    cred_dir = account.get("credentials_dir", "")
+    if not cred_dir or not os.path.isdir(cred_dir):
+        return None
+
+    # Check tmux is available
+    tmux_bin = shutil.which("tmux")
+    if not tmux_bin:
+        log(f"tmux not found, cannot query usage for {account['id']}")
+        return None
+
+    claude_bin = CLAUDE_BIN
+    if not os.path.isfile(claude_bin):
+        log(f"claude binary not found at {claude_bin}")
+        return None
+
+    sess_name = f"phantom_usage_{account['id']}"
+
+    # Kill any leftover session
+    subprocess.run([tmux_bin, "kill-session", "-t", sess_name],
+                   capture_output=True, timeout=5)
+
+    try:
+        # Build clean environment for Claude Code
+        clean_env = {
+            "HOME": cred_dir,
+            "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+            "TERM": "xterm-256color",
+            "LANG": os.environ.get("LANG", "en_US.UTF-8"),
+        }
+        env_args = " ".join(f"{k}={v}" for k, v in clean_env.items())
+
+        # Start tmux session running claude
+        subprocess.run(
+            [tmux_bin, "new-session", "-d", "-s", sess_name, "-x", "120", "-y", "50",
+             f"env -i {env_args} {claude_bin}"],
+            capture_output=True, timeout=10,
+        )
+
+        # Wait for Claude Code to start
+        time.sleep(15)
+
+        # Send /usage then Escape (to dismiss autocomplete) then Enter (to execute)
+        subprocess.run([tmux_bin, "send-keys", "-t", sess_name, "/usage"], capture_output=True, timeout=5)
+        time.sleep(2)
+        subprocess.run([tmux_bin, "send-keys", "-t", sess_name, "Escape"], capture_output=True, timeout=5)
+        time.sleep(1)
+        subprocess.run([tmux_bin, "send-keys", "-t", sess_name, "Enter"], capture_output=True, timeout=5)
+
+        # Wait for usage to render
+        time.sleep(20)
+
+        # Capture the visible terminal content
+        cp = subprocess.run(
+            [tmux_bin, "capture-pane", "-t", sess_name, "-p", "-S", "-50"],
+            capture_output=True, text=True, timeout=10,
+        )
+        raw_output = cp.stdout
+
+        # Exit claude
+        subprocess.run([tmux_bin, "send-keys", "-t", sess_name, "Escape"], capture_output=True, timeout=5)
+        time.sleep(1)
+        subprocess.run([tmux_bin, "send-keys", "-t", sess_name, "/exit", "Enter"], capture_output=True, timeout=5)
+        time.sleep(3)
+
+        if not raw_output or "% used" not in raw_output:
+            log(f"Usage query for {account['id']}: no usage data in output ({len(raw_output)} bytes)")
+            return {"error": "No usage data in output", "session_pct": None, "weekly_all_pct": None,
+                    "weekly_sonnet_pct": None, "weekly_opus_pct": None,
+                    "session_resets": None, "weekly_all_resets": None, "extra_usage_enabled": False}
+
+        result = _parse_usage_output(raw_output)
+        log(f"Usage query for {account['id']}: session={result.get('session_pct')}% weekly={result.get('weekly_all_pct')}%")
+        return result
+
+    except Exception as exc:
+        log(f"Usage query failed for {account['id']}: {exc}")
+        return {"error": str(exc), "session_pct": None, "weekly_all_pct": None,
+                "weekly_sonnet_pct": None, "weekly_opus_pct": None,
+                "session_resets": None, "weekly_all_resets": None, "extra_usage_enabled": False}
+    finally:
+        # Always clean up tmux session
+        try:
+            subprocess.run([tmux_bin, "kill-session", "-t", sess_name],
+                           capture_output=True, timeout=5)
+        except Exception:
+            pass
+
+
+def query_all_accounts_usage() -> dict:
+    """Query usage for all active accounts. Returns {account_id: usage_dict}."""
+    global _usage_query_running
+    if _usage_query_running:
+        log("Usage query already running, skipping")
+        return {}
+    _usage_query_running = True
+
+    try:
+        accounts = load_accounts()
+        active = [a for a in accounts if a.get("status") == "active"]
+        results = {}
+        for account in active:
+            usage = _query_claude_usage(account)
+            if usage:
+                usage["queried_at"] = time.time()
+                with _claude_usage_lock:
+                    _claude_usage_cache[account["id"]] = usage
+                results[account["id"]] = usage
+        return results
+    finally:
+        _usage_query_running = False
+
+
+def get_cached_claude_usage(account_id: str) -> dict | None:
+    """Get cached usage for an account, or None if not available."""
+    with _claude_usage_lock:
+        return _claude_usage_cache.get(account_id)
+
+
+def _usage_query_loop() -> None:
+    """Background thread: periodically query usage for all accounts."""
+    # Initial delay: 30-60 seconds after server start
+    time.sleep(random.uniform(30, 60))
+
+    while True:
+        try:
+            query_all_accounts_usage()
+        except Exception as exc:
+            log(f"Usage query loop error: {exc}")
+
+        # Random interval between queries
+        interval = random.uniform(USAGE_QUERY_MIN_INTERVAL, USAGE_QUERY_MAX_INTERVAL)
+        log(f"Next usage query in {interval:.0f}s")
+        time.sleep(interval)
+
+
 def build_quota_response(account: dict) -> dict:
-    """Build a complete quota response for an account from Anthropic APIs."""
+    """Build a complete quota response for an account from cached Claude usage data."""
     cred_dir = account.get("credentials_dir", "")
     has_credentials = bool(cred_dir) and any(
         os.path.exists(os.path.join(cred_dir, rp))
         for rp in CREDENTIAL_REL_PATHS
     )
 
-    base = {
+    base: dict = {
         "subscription_type": None,
         "five_hour": None,
         "seven_day": None,
@@ -839,30 +1123,38 @@ def build_quota_response(account: dict) -> dict:
         base["error"] = "No OAuth credentials found"
         return base
 
-    # Fetch usage
-    usage = fetch_anthropic_usage(account)
-    if usage is None:
-        base["error"] = "Failed to query Anthropic usage API (token may be invalid)"
+    # Use cached Claude Code /usage data
+    cached = get_cached_claude_usage(account["id"])
+    if not cached:
+        base["error"] = "Usage not yet queried (waiting for background query)"
         return base
 
-    # Format each limit
-    for key in ("five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"):
-        limit_data = usage.get(key)
-        if limit_data and isinstance(limit_data, dict) and limit_data.get("utilization") is not None:
-            base[key] = {
-                "utilization": limit_data["utilization"],
-                "resets_at": limit_data.get("resets_at"),
-                "resets_in": _format_resets_in(limit_data.get("resets_at")),
-            }
+    if cached.get("error"):
+        base["error"] = cached["error"]
 
-    extra = usage.get("extra_usage")
-    if extra and isinstance(extra, dict):
-        base["extra_usage"] = {
-            "is_enabled": extra.get("is_enabled", False),
-            "utilization": extra.get("utilization"),
+    # Map Claude usage fields to API response
+    if cached.get("session_pct") is not None:
+        base["five_hour"] = {
+            "utilization": cached["session_pct"],
+            "resets_at": cached.get("session_resets"),
+            "resets_in": cached.get("session_resets"),
         }
+    if cached.get("weekly_all_pct") is not None:
+        base["seven_day"] = {
+            "utilization": cached["weekly_all_pct"],
+            "resets_at": cached.get("weekly_all_resets"),
+            "resets_in": cached.get("weekly_all_resets"),
+        }
+    if cached.get("weekly_opus_pct") is not None:
+        base["seven_day_opus"] = {"utilization": cached["weekly_opus_pct"]}
+    if cached.get("weekly_sonnet_pct") is not None:
+        base["seven_day_sonnet"] = {"utilization": cached["weekly_sonnet_pct"]}
+    if cached.get("extra_usage_enabled") is not None:
+        base["extra_usage"] = {"is_enabled": cached["extra_usage_enabled"]}
 
-    # Fetch profile for subscription type
+    base["queried_at"] = cached.get("queried_at")
+
+    # Try to get profile via OAuth API (this is lightweight, cached 5min)
     profile = fetch_anthropic_profile(account)
     if profile:
         org = profile.get("organization", {})
@@ -1306,18 +1598,53 @@ class PhantomHandler(BaseHTTPRequestHandler):
             proxy_type = upstream_proxy.get("type", "direct") if upstream_proxy else "direct"
             proxy_info = f" via account={account.get('name', account_id)} proxy={proxy_type}"
 
-        log(f"CONNECT {target} from {client_ip}{proxy_info}")
+        # ── Concurrency control: acquire global semaphore ──
+        if not _global_semaphore.acquire(timeout=CONNECT_QUEUE_TIMEOUT):
+            log(f"CONNECT {target} from {client_ip} REJECTED: server busy ({_active_connections}/{MAX_GLOBAL_CONNECTIONS})")
+            self.send_response(503, "Service Unavailable")
+            self.send_header("Retry-After", "5")
+            self.end_headers()
+            try:
+                self.wfile.write(b"Server busy, try again later\n")
+            except Exception:
+                pass
+            return
 
-        # Send 200 and detach socket for raw tunnelling
-        self.send_response(200, "Connection Established")
-        self.end_headers()
-        # Detach the underlying socket and hand it to the tunnel handler
-        handle_connect(
-            self.connection, target,
-            upstream_proxy=upstream_proxy,
-            api_key_id=api_key_id,
-            account_id=account_id,
-        )
+        # ── Concurrency control: acquire per-account semaphore ──
+        acct_sem = _get_account_semaphore(account_id) if account_id else None
+        if acct_sem and not acct_sem.acquire(timeout=CONNECT_QUEUE_TIMEOUT):
+            _global_semaphore.release()
+            acct_count = _active_per_account.get(account_id, 0)
+            log(f"CONNECT {target} from {client_ip} REJECTED: account {account_id} busy ({acct_count}/{MAX_PER_ACCOUNT_CONNECTIONS})")
+            self.send_response(503, "Service Unavailable")
+            self.send_header("Retry-After", "5")
+            self.end_headers()
+            try:
+                self.wfile.write(b"Account busy, try again later\n")
+            except Exception:
+                pass
+            return
+
+        _track_connection(account_id, +1)
+        log(f"CONNECT {target} from {client_ip}{proxy_info} (conns: {_active_connections}/{MAX_GLOBAL_CONNECTIONS})")
+
+        try:
+            # Send 200 and detach socket for raw tunnelling
+            self.send_response(200, "Connection Established")
+            self.end_headers()
+            # Detach the underlying socket and hand it to the tunnel handler
+            handle_connect(
+                self.connection, target,
+                upstream_proxy=upstream_proxy,
+                api_key_id=api_key_id,
+                account_id=account_id,
+            )
+        finally:
+            # Always release semaphores and update counters
+            _track_connection(account_id, -1)
+            if acct_sem:
+                acct_sem.release()
+            _global_semaphore.release()
 
     # ── Routing ───────────────────────────────────────────────────────────
 
@@ -1405,6 +1732,9 @@ class PhantomHandler(BaseHTTPRequestHandler):
             acc_id = path[len("/api/accounts/"):]
             return self._handle_accounts_delete(acc_id)
 
+        if method == "POST" and path == "/api/usage/refresh":
+            return self._handle_usage_refresh()
+
         # ── Usage & assignments ───────────────────────────────────────────
 
         if method == "GET" and path == "/api/usage":
@@ -1442,7 +1772,10 @@ class PhantomHandler(BaseHTTPRequestHandler):
     # ── Handlers ──────────────────────────────────────────────────────────
 
     def _handle_health(self) -> None:
-        self._send_json(200, {"status": "ok"})
+        self._send_json(200, {
+            "status": "ok",
+            "connections": _get_connection_stats(),
+        })
 
     def _handle_auth_setup(self) -> None:
         """First-time setup: set master password. Only allowed if not yet set."""
@@ -1736,19 +2069,15 @@ class PhantomHandler(BaseHTTPRequestHandler):
                 for rp in CREDENTIAL_REL_PATHS
             ) if cred_dir else False
 
-            # Build quick quota summary from cache (non-blocking)
+            # Build quick quota summary from Claude usage cache (non-blocking)
             real_quota = None
-            cache = _oauth_cache.get(a["id"], {})
-            cached_usage = cache.get("usage")
-            cached_profile = cache.get("profile")
-            if cached_usage:
-                rq: dict = {"subscription_type": None, "five_hour_pct": None, "seven_day_pct": None, "error": None}
-                fh = cached_usage.get("five_hour")
-                sd = cached_usage.get("seven_day")
-                if fh and isinstance(fh, dict):
-                    rq["five_hour_pct"] = fh.get("utilization")
-                if sd and isinstance(sd, dict):
-                    rq["seven_day_pct"] = sd.get("utilization")
+            cached = get_cached_claude_usage(a["id"])
+            if cached:
+                rq: dict = {"subscription_type": None, "five_hour_pct": None, "seven_day_pct": None, "error": cached.get("error")}
+                rq["five_hour_pct"] = cached.get("session_pct")
+                rq["seven_day_pct"] = cached.get("weekly_all_pct")
+                # Try profile from oauth cache for subscription type
+                cached_profile = _oauth_cache.get(a["id"], {}).get("profile")
                 if cached_profile:
                     org_type = cached_profile.get("organization", {}).get("organization_type", "")
                     if "max" in org_type:
@@ -1889,6 +2218,21 @@ class PhantomHandler(BaseHTTPRequestHandler):
 
         result = build_quota_response(found)
         self._send_json(200, result)
+
+    def _handle_usage_refresh(self) -> None:
+        """Manually trigger usage query for all accounts."""
+        if not self._is_authenticated():
+            self._send_json(401, {"error": "Unauthorized"})
+            return
+
+        # Run query in background thread to not block the HTTP response
+        def _run():
+            results = query_all_accounts_usage()
+            log(f"Manual usage refresh: queried {len(results)} accounts")
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        self._send_json(200, {"status": "querying", "message": "Usage query started in background"})
 
     def _handle_accounts_delete(self, acc_id: str) -> None:
         if not self._is_authenticated():
@@ -2225,6 +2569,14 @@ def main() -> None:
     quota_thread = threading.Thread(target=_quota_check_loop, daemon=True)
     quota_thread.start()
     log("Quota checker: started")
+
+    # Start Claude Code usage query background thread
+    if shutil.which("tmux") and os.path.isfile(CLAUDE_BIN):
+        usage_query_thread = threading.Thread(target=_usage_query_loop, daemon=True)
+        usage_query_thread.start()
+        log(f"Claude usage query: started (interval {USAGE_QUERY_MIN_INTERVAL}-{USAGE_QUERY_MAX_INTERVAL}s)")
+    else:
+        log("Claude usage query: DISABLED (tmux or claude not found)")
 
     server = ThreadedHTTPServer(("0.0.0.0", LISTEN_PORT), PhantomHandler)
     log(f"Listening on 0.0.0.0:{LISTEN_PORT} (CONNECT proxy + REST API + multi-account)")
