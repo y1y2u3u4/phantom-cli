@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/lib/api';
 import type { Account, AccountQuotaResponse } from '@/lib/types';
 import { Card } from '@/components/ui/Card';
@@ -22,18 +22,35 @@ function barColor(pct: number): string {
   return 'bg-success';
 }
 
+function barTextColor(pct: number): string {
+  if (pct > 80) return 'text-danger';
+  if (pct > 50) return 'text-yellow-500';
+  return 'text-success';
+}
+
 function QuotaBar({ label, pct, resetsIn }: { label: string; pct: number; resetsIn: string | null }) {
   return (
     <div>
-      <div className="flex justify-between text-xs text-text-secondary mb-0.5">
-        <span>{label}</span>
-        <span>{pct}% used{resetsIn ? ` \u00B7 resets ${resetsIn}` : ''}</span>
+      <div className="flex justify-between text-xs mb-0.5">
+        <span className="text-text-secondary">{label}</span>
+        <span className={barTextColor(pct)}>
+          {pct}%{resetsIn ? <span className="text-text-secondary/60"> · resets {resetsIn}</span> : ''}
+        </span>
       </div>
       <div className="h-1.5 bg-border rounded-full overflow-hidden">
         <div className={`h-full ${barColor(pct)} rounded-full transition-all`} style={{ width: `${Math.min(100, pct)}%` }} />
       </div>
     </div>
   );
+}
+
+function timeAgo(ts: number | null | undefined): string {
+  if (!ts) return '';
+  const diffSec = Math.floor(Date.now() / 1000 - ts);
+  if (diffSec < 60) return 'just now';
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+  return `${Math.floor(diffSec / 86400)}d ago`;
 }
 
 export function AccountCard({ account, onEdit, onRefresh }: AccountCardProps) {
@@ -45,17 +62,18 @@ export function AccountCard({ account, onEdit, onRefresh }: AccountCardProps) {
 
   const proxy = account.upstream_proxy;
 
-  // Load real quota async when card mounts (only if account has credentials)
-  useEffect(() => {
+  const loadQuota = useCallback(async () => {
     if (!account.has_credentials) return;
-    let cancelled = false;
     setQuotaLoading(true);
-    api.getAccountQuota(account.id)
-      .then((res) => { if (!cancelled) setQuota(res); })
-      .catch(() => {})
-      .finally(() => { if (!cancelled) setQuotaLoading(false); });
-    return () => { cancelled = true; };
+    try {
+      const res = await api.getAccountQuota(account.id);
+      setQuota(res);
+    } catch {}
+    setQuotaLoading(false);
   }, [account.id, account.has_credentials]);
+
+  // Load real quota async when card mounts
+  useEffect(() => { loadQuota(); }, [loadQuota]);
 
   const handleDelete = async () => {
     setDeleting(true);
@@ -64,6 +82,8 @@ export function AccountCard({ account, onEdit, onRefresh }: AccountCardProps) {
 
   // Subscription type badge
   const subType = quota?.subscription_type || account.real_quota?.subscription_type;
+
+  const hasQuotaData = quota && !quota.error && (quota.five_hour || quota.seven_day);
 
   return (
     <>
@@ -92,7 +112,7 @@ export function AccountCard({ account, onEdit, onRefresh }: AccountCardProps) {
             <div className="flex items-center gap-2 text-xs text-text-secondary py-1">
               <Spinner size={12} /> Loading quota...
             </div>
-          ) : quota && !quota.error ? (
+          ) : hasQuotaData ? (
             <div className="space-y-2">
               {quota.five_hour && (
                 <QuotaBar label="Session (5h)" pct={quota.five_hour.utilization} resetsIn={quota.five_hour.resets_in} />
@@ -101,18 +121,35 @@ export function AccountCard({ account, onEdit, onRefresh }: AccountCardProps) {
                 <QuotaBar label="Weekly (7d)" pct={quota.seven_day.utilization} resetsIn={quota.seven_day.resets_in} />
               )}
               {quota.seven_day_opus && (
-                <QuotaBar label="Opus (7d)" pct={quota.seven_day_opus.utilization} resetsIn={quota.seven_day_opus.resets_in} />
+                <QuotaBar label="Opus (7d)" pct={quota.seven_day_opus.utilization} resetsIn={null} />
               )}
               {quota.seven_day_sonnet && (
-                <QuotaBar label="Sonnet (7d)" pct={quota.seven_day_sonnet.utilization} resetsIn={quota.seven_day_sonnet.resets_in} />
+                <QuotaBar label="Sonnet (7d)" pct={quota.seven_day_sonnet.utilization} resetsIn={null} />
               )}
-              {!quota.five_hour && !quota.seven_day && (
-                <p className="text-xs text-text-secondary">No active usage limits</p>
+              {/* Queried timestamp */}
+              {quota.queried_at && (
+                <div className="flex items-center justify-between text-[10px] text-text-secondary/50 pt-0.5">
+                  <span>Queried {timeAgo(quota.queried_at)}</span>
+                  <button
+                    onClick={loadQuota}
+                    disabled={quotaLoading}
+                    className="hover:text-text-secondary transition-colors disabled:opacity-50"
+                    title="Refresh quota"
+                  >
+                    {quotaLoading ? <Spinner size={10} /> : (
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+                      </svg>
+                    )}
+                  </button>
+                </div>
               )}
             </div>
           ) : quota?.error ? (
             <p className="text-xs text-danger">{quota.error}</p>
-          ) : null
+          ) : (
+            <p className="text-xs text-text-secondary">No active usage limits</p>
+          )
         ) : (
           <div className="flex items-center gap-1.5 text-xs">
             <span className="text-yellow-500">{'\u26A0'}</span>

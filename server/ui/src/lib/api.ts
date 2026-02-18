@@ -99,6 +99,8 @@ export const api = {
   // Usage
   getUsage: (month?: string) =>
     request<UsageResponse>('GET', `/api/usage${month ? `?month=${month}` : ''}`),
+  refreshQuota: () =>
+    request<MessageResponse>('POST', '/api/usage/refresh'),
 
   // Assignments
   getAssignments: () => request<AssignmentsResponse>('GET', '/api/assignments'),

@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { api } from '@/lib/api';
 import type { Account } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
+import { Spinner } from '@/components/ui/Spinner';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Card } from '@/components/ui/Card';
 import { AccountCard } from '@/components/accounts/AccountCard';
@@ -13,6 +14,7 @@ export default function AccountsPage() {
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Account | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -26,11 +28,23 @@ export default function AccountsPage() {
   const openCreate = () => { setEditing(null); setFormOpen(true); };
   const openEdit = (a: Account) => { setEditing(a); setFormOpen(true); };
 
+  const handleRefreshQuota = async () => {
+    setRefreshing(true);
+    try { await api.refreshQuota(); } catch {}
+    // Wait a moment for background queries, then reload
+    setTimeout(() => { refresh(); setRefreshing(false); }, 3000);
+  };
+
   return (
     <div className="max-w-6xl space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold text-text-primary">Accounts</h2>
-        <Button onClick={openCreate}>Add Account</Button>
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" size="sm" onClick={handleRefreshQuota} disabled={refreshing}>
+            {refreshing ? <><Spinner size={14} /> Refreshing...</> : 'Refresh Quota'}
+          </Button>
+          <Button onClick={openCreate}>Add Account</Button>
+        </div>
       </div>
 
       {accounts === null ? (

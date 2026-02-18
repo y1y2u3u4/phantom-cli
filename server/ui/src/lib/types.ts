@@ -72,6 +72,7 @@ export interface AccountQuotaResponse {
   extra_usage: { is_enabled: boolean; utilization: number | null } | null;
   has_credentials: boolean;
   error: string | null;
+  queried_at: number | null;
 }
 
 export interface Account {

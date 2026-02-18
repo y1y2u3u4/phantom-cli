@@ -117,7 +117,10 @@ OAUTH_PROFILE_CACHE_TTL = 300  # cache profile responses for 5 minutes
 MAX_GLOBAL_CONNECTIONS = 50       # max concurrent CONNECT tunnels
 MAX_PER_ACCOUNT_CONNECTIONS = 10  # max concurrent tunnels per account
 CONNECT_QUEUE_TIMEOUT = 30        # seconds to wait in queue before 503
+CONNECT_RATE_BASE = 2.0           # base seconds between new connections per account
+CONNECT_RATE_JITTER = 1.5         # random jitter added to rate interval (0 to this value)
 STICKY_BREAK_THRESHOLD = 80.0     # break sticky session when five_hour utilization >= this %
+QUOTA_REJECT_THRESHOLD = 95.0     # reject new CONNECT when session OR weekly utilization >= this %
 
 # Claude Code usage query via tmux
 USAGE_QUERY_MIN_INTERVAL = 600    # 10 minutes minimum between queries
@@ -143,6 +146,8 @@ _account_semaphores_lock = threading.Lock()
 _active_connections = 0           # current global active tunnels
 _active_per_account: dict = {}    # {account_id: int}
 _connections_lock = threading.Lock()
+_account_last_connect: dict = {}  # {account_id: float} last CONNECT timestamp per account
+_account_rate_locks: dict = {}    # {account_id: threading.Lock} serialise rate-limit check
 
 # Claude Code usage query cache
 # {account_id: {"session_pct": int, "weekly_all_pct": int, "weekly_sonnet_pct": int|None,
@@ -580,6 +585,22 @@ def _is_account_overloaded(account: dict) -> bool:
     if session_pct is not None:
         return float(session_pct) >= STICKY_BREAK_THRESHOLD
     return False
+
+
+def _is_account_quota_exhausted(account: dict) -> tuple[bool, str]:
+    """Check if account quota is at/near limit. Returns (exhausted, reason)."""
+    cached = get_cached_claude_usage(account["id"])
+    if not cached:
+        return False, ""
+    session_pct = cached.get("session_pct")
+    weekly_pct = cached.get("weekly_all_pct")
+    if session_pct is not None and float(session_pct) >= QUOTA_REJECT_THRESHOLD:
+        resets = cached.get("session_resets", "unknown")
+        return True, f"Session quota {session_pct}% (>={QUOTA_REJECT_THRESHOLD}%). Resets: {resets}"
+    if weekly_pct is not None and float(weekly_pct) >= QUOTA_REJECT_THRESHOLD:
+        resets = cached.get("weekly_all_resets", "unknown")
+        return True, f"Weekly quota {weekly_pct}% (>={QUOTA_REJECT_THRESHOLD}%). Resets: {resets}"
+    return False, ""
 
 
 # ── Account resolution & sticky sessions ─────────────────────────────────────
@@ -1601,6 +1622,21 @@ class PhantomHandler(BaseHTTPRequestHandler):
             proxy_type = upstream_proxy.get("type", "direct") if upstream_proxy else "direct"
             proxy_info = f" via account={account.get('name', account_id)} proxy={proxy_type}"
 
+        # ── Quota circuit breaker: reject if account near/at limit ──
+        if account:
+            exhausted, reason = _is_account_quota_exhausted(account)
+            if exhausted:
+                log(f"CONNECT {target} from {client_ip} REJECTED: quota exhausted — {reason}")
+                self.send_response(429, "Quota Exhausted")
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Retry-After", "300")
+                self.end_headers()
+                try:
+                    self.wfile.write(f"Account quota limit reached. {reason}\n".encode())
+                except Exception:
+                    pass
+                return
+
         # ── Concurrency control: acquire global semaphore ──
         if not _global_semaphore.acquire(timeout=CONNECT_QUEUE_TIMEOUT):
             log(f"CONNECT {target} from {client_ip} REJECTED: server busy ({_active_connections}/{MAX_GLOBAL_CONNECTIONS})")
@@ -1627,6 +1663,19 @@ class PhantomHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
             return
+
+        # ── Rate limit with jitter: simulate natural human timing ──
+        if account_id and CONNECT_RATE_BASE > 0:
+            if account_id not in _account_rate_locks:
+                _account_rate_locks[account_id] = threading.Lock()
+            with _account_rate_locks[account_id]:
+                now = time.time()
+                last = _account_last_connect.get(account_id, 0)
+                interval = CONNECT_RATE_BASE + random.uniform(0, CONNECT_RATE_JITTER)
+                wait = interval - (now - last)
+                if wait > 0:
+                    time.sleep(wait)
+                _account_last_connect[account_id] = time.time()
 
         _track_connection(account_id, +1)
         log(f"CONNECT {target} from {client_ip}{proxy_info} (conns: {_active_connections}/{MAX_GLOBAL_CONNECTIONS})")
