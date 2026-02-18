@@ -70,6 +70,12 @@ phantom_hijack_exec() {
     # Switch to shadow HOME
     export HOME="$SHADOW_HOME"
 
+    # Clear Claude Code nesting detection vars — Phantom launches
+    # an independent Claude Code session, not a nested one
+    unset CLAUDECODE
+    unset CLAUDE_CODE_ENTRYPOINT
+    unset CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+
     # Source phantom profile if exists (custom env vars)
     if [ -f "$SHADOW_HOME/.phantom_profile" ]; then
         source "$SHADOW_HOME/.phantom_profile"
