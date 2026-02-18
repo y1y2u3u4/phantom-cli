@@ -998,7 +998,7 @@ def _query_claude_usage(account: dict) -> dict | None:
 
         # Start tmux session running claude
         subprocess.run(
-            [tmux_bin, "new-session", "-d", "-s", sess_name, "-x", "120", "-y", "50",
+            [tmux_bin, "new-session", "-d", "-s", sess_name, "-x", "200", "-y", "50",
              f"env -i {env_args} {claude_bin}"],
             capture_output=True, timeout=10,
         )
@@ -1006,12 +1006,13 @@ def _query_claude_usage(account: dict) -> dict | None:
         # Wait for Claude Code to start
         time.sleep(15)
 
-        # Send /usage then Escape (to dismiss autocomplete) then Enter (to execute)
-        subprocess.run([tmux_bin, "send-keys", "-t", sess_name, "/usage"], capture_output=True, timeout=5)
-        time.sleep(2)
-        subprocess.run([tmux_bin, "send-keys", "-t", sess_name, "Escape"], capture_output=True, timeout=5)
-        time.sleep(1)
-        subprocess.run([tmux_bin, "send-keys", "-t", sess_name, "Enter"], capture_output=True, timeout=5)
+        # Send /usage then Enter (Enter selects first autocomplete match = /usage)
+        # NOTE: Do NOT send Escape — it exits Claude Code entirely
+        subprocess.run([tmux_bin, "send-keys", "-t", sess_name, "/usage", ""],
+                       capture_output=True, timeout=5)
+        time.sleep(3)
+        subprocess.run([tmux_bin, "send-keys", "-t", sess_name, "Enter", ""],
+                       capture_output=True, timeout=5)
 
         # Wait for usage to render
         time.sleep(20)
@@ -1023,10 +1024,12 @@ def _query_claude_usage(account: dict) -> dict | None:
         )
         raw_output = cp.stdout
 
-        # Exit claude
-        subprocess.run([tmux_bin, "send-keys", "-t", sess_name, "Escape"], capture_output=True, timeout=5)
+        # Close the usage panel with Escape, then exit claude with /exit
+        subprocess.run([tmux_bin, "send-keys", "-t", sess_name, "Escape", ""],
+                       capture_output=True, timeout=5)
         time.sleep(1)
-        subprocess.run([tmux_bin, "send-keys", "-t", sess_name, "/exit", "Enter"], capture_output=True, timeout=5)
+        subprocess.run([tmux_bin, "send-keys", "-t", sess_name, "/exit", "Enter"],
+                       capture_output=True, timeout=5)
         time.sleep(3)
 
         if not raw_output or "% used" not in raw_output:
