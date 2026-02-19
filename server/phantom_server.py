@@ -115,12 +115,15 @@ OAUTH_PROFILE_CACHE_TTL = 300  # cache profile responses for 5 minutes
 
 # Concurrency control
 MAX_GLOBAL_CONNECTIONS = 50       # max concurrent CONNECT tunnels
-MAX_PER_ACCOUNT_CONNECTIONS = 10  # max concurrent tunnels per account
+MAX_PER_ACCOUNT_CONNECTIONS = 20  # max concurrent tunnels per account (idle ones auto-close)
 CONNECT_QUEUE_TIMEOUT = 30        # seconds to wait in queue before 503
 CONNECT_RATE_BASE = 2.0           # base seconds between new connections per account
 CONNECT_RATE_JITTER = 1.5         # random jitter added to rate interval (0 to this value)
 STICKY_BREAK_THRESHOLD = 80.0     # break sticky session when five_hour utilization >= this %
 QUOTA_REJECT_THRESHOLD = 95.0     # reject new CONNECT when session OR weekly utilization >= this %
+IDLE_TIMEOUT_MIN = 30             # min seconds idle before auto-close
+IDLE_TIMEOUT_MAX = 60             # max seconds idle before auto-close (randomised per connection)
+IDLE_CHECK_INTERVAL = 10          # socket timeout for periodic idle checks
 
 # Claude Code usage query via tmux
 USAGE_QUERY_MIN_INTERVAL = 600    # 10 minutes minimum between queries
@@ -149,6 +152,11 @@ _active_per_account: dict = {}    # {account_id: int}
 _connections_lock = threading.Lock()
 _account_last_connect: dict = {}  # {account_id: float} last CONNECT timestamp per account
 _account_rate_locks: dict = {}    # {account_id: threading.Lock} serialise rate-limit check
+
+# Connection registry for idle detection
+# {conn_id: {"account_id": str, "target": str, "last_activity": float, "started_at": float}}
+_connection_registry: dict = {}
+_connection_registry_lock = threading.Lock()
 
 # Claude Code usage query cache
 # {account_id: {"session_pct": int, "weekly_all_pct": int, "weekly_sonnet_pct": int|None,
@@ -546,13 +554,39 @@ def _track_connection(account_id: str | None, delta: int) -> None:
 
 
 def _get_connection_stats() -> dict:
-    """Return current connection statistics."""
+    """Return current connection statistics with idle breakdown."""
+    now = time.time()
+    idle_threshold = IDLE_TIMEOUT_MIN / 2  # half of min timeout = "idle"
+
+    # Count idle vs active from registry
+    idle_count = 0
+    per_account_idle: dict[str, int] = {}
+    with _connection_registry_lock:
+        for entry in _connection_registry.values():
+            idle_secs = now - entry["last_activity"]
+            if idle_secs >= idle_threshold:
+                idle_count += 1
+                aid = entry.get("account_id") or "unknown"
+                per_account_idle[aid] = per_account_idle.get(aid, 0) + 1
+
     with _connections_lock:
+        total = _active_connections
+        per_account_detail = {}
+        for aid, count in _active_per_account.items():
+            idle = per_account_idle.get(aid, 0)
+            per_account_detail[aid] = {
+                "total": count,
+                "idle": idle,
+                "active": max(0, count - idle),
+            }
         return {
-            "active": _active_connections,
+            "active": total,
+            "idle": idle_count,
+            "truly_active": max(0, total - idle_count),
             "max": MAX_GLOBAL_CONNECTIONS,
-            "per_account": dict(_active_per_account),
+            "per_account": per_account_detail,
             "per_account_max": MAX_PER_ACCOUNT_CONNECTIONS,
+            "idle_timeout": f"{IDLE_TIMEOUT_MIN}-{IDLE_TIMEOUT_MAX}",
         }
 
 
@@ -1459,16 +1493,43 @@ def migrate_v1_to_v2() -> None:
 
 # ── CONNECT proxy tunnel ──────────────────────────────────────────────────────
 
-def _forward(src: socket.socket, dst: socket.socket, byte_counter: list | None = None) -> None:
-    """Forward data from src to dst until connection closes. Optionally count bytes."""
+def _forward(
+    src: socket.socket, dst: socket.socket,
+    byte_counter: list | None = None, conn_id: str | None = None,
+) -> None:
+    """Forward data from src to dst until connection closes.
+    Optionally count bytes and track activity for idle detection."""
     total = 0
+    idle_enabled = IDLE_TIMEOUT_MIN > 0 and conn_id is not None
+    if idle_enabled:
+        src.settimeout(IDLE_CHECK_INTERVAL)
     try:
         while True:
-            data = src.recv(BUFFER_SIZE)
+            try:
+                data = src.recv(BUFFER_SIZE)
+            except socket.timeout:
+                # Socket timeout — check if connection has been idle too long
+                if idle_enabled:
+                    with _connection_registry_lock:
+                        entry = _connection_registry.get(conn_id)
+                    if entry:
+                        idle_secs = time.time() - entry["last_activity"]
+                        threshold = entry.get("idle_timeout", IDLE_TIMEOUT_MAX)
+                        if idle_secs >= threshold:
+                            log(f"Idle timeout ({int(idle_secs)}s >= {int(threshold)}s): closing {entry.get('target', '?')} "
+                                f"account={entry.get('account_id', '?')} conn={conn_id}")
+                            break
+                continue
             if not data:
                 break
             dst.sendall(data)
             total += len(data)
+            # Update last activity timestamp
+            if idle_enabled:
+                with _connection_registry_lock:
+                    entry = _connection_registry.get(conn_id)
+                    if entry:
+                        entry["last_activity"] = time.time()
     except Exception:
         pass
     finally:
@@ -1494,6 +1555,19 @@ def handle_connect(
     started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     bytes_up_counter: list[int] = []
     bytes_down_counter: list[int] = []
+    conn_id = f"{account_id or 'none'}:{int(time.time() * 1000)}"
+
+    # Register connection for idle tracking (randomised timeout per connection)
+    now = time.time()
+    conn_idle_timeout = random.uniform(IDLE_TIMEOUT_MIN, IDLE_TIMEOUT_MAX)
+    with _connection_registry_lock:
+        _connection_registry[conn_id] = {
+            "account_id": account_id,
+            "target": target,
+            "last_activity": now,
+            "started_at": now,
+            "idle_timeout": conn_idle_timeout,
+        }
 
     try:
         host, _, port_str = target.rpartition(":")
@@ -1506,12 +1580,12 @@ def handle_connect(
 
         t1 = threading.Thread(
             target=_forward,
-            args=(client_socket, remote_socket, bytes_up_counter),
+            args=(client_socket, remote_socket, bytes_up_counter, conn_id),
             daemon=True,
         )
         t2 = threading.Thread(
             target=_forward,
-            args=(remote_socket, client_socket, bytes_down_counter),
+            args=(remote_socket, client_socket, bytes_down_counter, conn_id),
             daemon=True,
         )
         t1.start()
@@ -1548,6 +1622,10 @@ def handle_connect(
             client_socket.close()
         except Exception:
             pass
+    finally:
+        # Clean up connection registry
+        with _connection_registry_lock:
+            _connection_registry.pop(conn_id, None)
 
 
 # ── HTTP request handler ──────────────────────────────────────────────────────
