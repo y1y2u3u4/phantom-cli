@@ -7,7 +7,7 @@
 #   bash install.sh 1.2.3.4 --key sk-phantom-xxx    # Install + auto-configure
 #   bash install.sh 1.2.3.4 --port 9090 --key xxx   # With custom port
 
-set -euo pipefail
+set -eo pipefail
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -18,6 +18,7 @@ NC='\033[0m'
 
 INSTALL_DIR="/usr/local/bin/phantom-cli"
 SYMLINK_PATH="/usr/local/bin/phantom"
+GITHUB_RAW="https://raw.githubusercontent.com/y1y2u3u4/phantom-cli/master/client"
 
 log_info()    { echo -e "${CYAN}[info]${NC} $*"; }
 log_success() { echo -e "${GREEN}[ok]${NC} $*"; }
@@ -30,8 +31,15 @@ for arg in "$@"; do
     SETUP_ARGS+=("$arg")
 done
 
-# Resolve script directory
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Detect source: local git clone or remote curl|bash
+SCRIPT_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+IS_REMOTE=false
+if [ -z "$SCRIPT_DIR" ] || [ ! -f "$SCRIPT_DIR/phantom" ]; then
+    IS_REMOTE=true
+fi
 
 echo -e "${BOLD}Phantom CLI Installer${NC}"
 echo "────────────────────────────────────────"
@@ -65,9 +73,23 @@ if [ -d "$INSTALL_DIR" ]; then
 fi
 
 sudo mkdir -p "$INSTALL_DIR"
-sudo cp "$SCRIPT_DIR/phantom" "$INSTALL_DIR/phantom"
 sudo mkdir -p "$INSTALL_DIR/lib"
-sudo cp "$SCRIPT_DIR/lib/"*.sh "$INSTALL_DIR/lib/"
+
+LIB_FILES="config.sh sandbox.sh hijack.sh tunnel.sh auth.sh doctor.sh"
+
+if [ "$IS_REMOTE" = true ]; then
+    log_info "Downloading from GitHub..."
+    # Download main script
+    sudo curl -fsSL "$GITHUB_RAW/phantom" -o "$INSTALL_DIR/phantom"
+    # Download lib files
+    for f in $LIB_FILES; do
+        sudo curl -fsSL "$GITHUB_RAW/lib/$f" -o "$INSTALL_DIR/lib/$f"
+    done
+else
+    log_info "Copying from local source..."
+    sudo cp "$SCRIPT_DIR/phantom" "$INSTALL_DIR/phantom"
+    sudo cp "$SCRIPT_DIR/lib/"*.sh "$INSTALL_DIR/lib/"
+fi
 
 # Make executable
 sudo chmod +x "$INSTALL_DIR/phantom"
