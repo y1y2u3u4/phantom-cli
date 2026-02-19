@@ -152,8 +152,18 @@ _tunnel_start_port_forward() {
 
     local ssh_opts="-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o ConnectTimeout=10"
 
-    if [ -n "$ssh_password" ] && command -v sshpass &>/dev/null; then
-        sshpass -p "$ssh_password" ssh $ssh_opts -f -N \
+    # Find sshpass (may not be in PATH for non-interactive SSH sessions)
+    local sshpass_cmd=""
+    if command -v sshpass &>/dev/null; then
+        sshpass_cmd="sshpass"
+    elif [ -x /opt/homebrew/bin/sshpass ]; then
+        sshpass_cmd="/opt/homebrew/bin/sshpass"
+    elif [ -x /usr/local/bin/sshpass ]; then
+        sshpass_cmd="/usr/local/bin/sshpass"
+    fi
+
+    if [ -n "$ssh_password" ] && [ -n "$sshpass_cmd" ]; then
+        "$sshpass_cmd" -p "$ssh_password" ssh $ssh_opts -f -N \
             -L "${proxy_port}:localhost:${proxy_port}" \
             -p "$ssh_port" "root@${host}" 2>/dev/null
     elif [ -f "$ssh_key" ]; then
