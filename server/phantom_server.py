@@ -1777,9 +1777,14 @@ class PhantomHandler(BaseHTTPRequestHandler):
         target = self.path  # "host:port"
         client_ip = self._client_ip()
 
-        # Extract API key from Proxy-Authorization header
+        # Extract and validate API key — reject unauthenticated CONNECT
         api_key = self._get_proxy_auth_key()
         key_record = self._validate_api_key(api_key) if api_key else None
+        if not key_record:
+            self.send_response(407, "Proxy Authentication Required")
+            self.send_header("Proxy-Authenticate", "Basic realm=\"Phantom Proxy\"")
+            self.end_headers()
+            return
 
         # Resolve account for upstream proxy routing
         account = resolve_account(key_record, client_ip)
