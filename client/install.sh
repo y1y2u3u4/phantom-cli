@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Phantom CLI - Installer
 # Copies phantom + lib/ to /usr/local/bin/phantom-cli/ and creates symlink
+#
+# Usage:
+#   bash install.sh                                  # Install only
+#   bash install.sh 1.2.3.4 --key sk-phantom-xxx    # Install + auto-configure
+#   bash install.sh 1.2.3.4 --port 9090 --key xxx   # With custom port
 
 set -euo pipefail
 
@@ -19,6 +24,12 @@ log_success() { echo -e "${GREEN}[ok]${NC} $*"; }
 log_warn()    { echo -e "${YELLOW}[warn]${NC} $*"; }
 log_error()   { echo -e "${RED}[error]${NC} $*" >&2; }
 
+# Parse install arguments (VPS_IP and setup flags are forwarded to phantom setup)
+SETUP_ARGS=()
+for arg in "$@"; do
+    SETUP_ARGS+=("$arg")
+done
+
 # Resolve script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -26,35 +37,24 @@ echo -e "${BOLD}Phantom CLI Installer${NC}"
 echo "────────────────────────────────────────"
 echo ""
 
-# Check for required dependencies
+# Check for required dependencies (autossh only needed for tunnel mode)
 check_dep() {
     local name="$1"
     local install_hint="$2"
     if command -v "$name" &>/dev/null; then
         echo -e "  ${GREEN}[ok]${NC} $name found"
     else
-        echo -e "  ${RED}[missing]${NC} $name - $install_hint"
+        echo -e "  ${YELLOW}[optional]${NC} $name - $install_hint"
         return 1
     fi
 }
 
 echo -e "${BOLD}Checking dependencies...${NC}"
-deps_ok=true
-check_dep "autossh" "brew install autossh" || deps_ok=false
 check_dep "ssh"     "Should be pre-installed on macOS" || true
 check_dep "nc"      "Should be pre-installed on macOS" || true
 check_dep "curl"    "brew install curl" || true
-
+check_dep "autossh" "brew install autossh (only needed for tunnel mode)" || true
 echo ""
-
-if [ "$deps_ok" = false ]; then
-    log_warn "Some dependencies are missing. Phantom may not work fully."
-    read -rp "Continue anyway? (y/N): " confirm
-    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
-        log_info "Aborted. Install missing dependencies and try again."
-        exit 1
-    fi
-fi
 
 # Install files
 log_info "Installing to $INSTALL_DIR..."
@@ -97,10 +97,19 @@ fi
 echo ""
 echo "────────────────────────────────────────"
 log_success "Phantom CLI installed successfully!"
-echo ""
-log_info "Next steps:"
-echo -e "  ${GREEN}phantom setup <VPS_IP>${NC}                # One-click configure"
-echo -e "  ${GREEN}phantom setup <VPS_IP> --password P${NC}   # With SSH password"
-echo ""
-echo -e "  Then just run ${GREEN}phantom${NC} to start Claude!"
-echo ""
+
+# Auto-run setup if VPS IP was provided
+if [ ${#SETUP_ARGS[@]} -gt 0 ]; then
+    echo ""
+    log_info "Running setup with provided arguments..."
+    echo ""
+    "$SYMLINK_PATH" setup "${SETUP_ARGS[@]}" || log_warn "Setup encountered issues. You can retry: phantom setup ${SETUP_ARGS[*]}"
+else
+    echo ""
+    log_info "Next steps:"
+    echo -e "  ${GREEN}phantom setup <VPS_IP> --key sk-phantom-xxx${NC}   # Configure (recommended)"
+    echo -e "  ${GREEN}phantom setup <VPS_IP> --password P${NC}           # With SSH password"
+    echo ""
+    echo -e "  Then just run ${GREEN}phantom${NC} to start Claude!"
+    echo ""
+fi

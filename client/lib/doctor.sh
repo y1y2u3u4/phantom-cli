@@ -9,48 +9,7 @@ phantom_doctor_run() {
 
     local issues=0
 
-    # 1. Check dependencies
-    _doctor_check "autossh installed" \
-        "command -v autossh &>/dev/null" \
-        "Install with: brew install autossh"
-    issues=$((issues + $?))
-
-    _doctor_check "ssh installed" \
-        "command -v ssh &>/dev/null" \
-        "SSH should be pre-installed on macOS"
-    issues=$((issues + $?))
-
-    _doctor_check "nc (netcat) installed" \
-        "command -v nc &>/dev/null" \
-        "Netcat should be pre-installed on macOS"
-    issues=$((issues + $?))
-
-    _doctor_check "curl installed" \
-        "command -v curl &>/dev/null" \
-        "Install with: brew install curl"
-    issues=$((issues + $?))
-
-    # 2. Check config
-    _doctor_check "Config file exists" \
-        "[ -f '$PHANTOM_CONFIG' ]" \
-        "Run: phantom init"
-    issues=$((issues + $?))
-
-    # 3. Check SSH key
-    local ssh_key
-    ssh_key=$(phantom_config_get "SSH_KEY" 2>/dev/null || echo "$HOME/.ssh/id_rsa")
-    _doctor_check "SSH key exists ($ssh_key)" \
-        "[ -f '$ssh_key' ]" \
-        "Generate with: ssh-keygen -t ed25519 -f $ssh_key"
-    issues=$((issues + $?))
-
-    # 4. Check tunnel
-    _doctor_check "Tunnel is connected" \
-        "_tunnel_is_alive" \
-        "Run: phantom connect"
-    issues=$((issues + $?))
-
-    # 5. Check HTTP proxy port
+    # Load config early for mode-aware checks
     local server_host http_proxy_port connection_mode proxy_host
     server_host=$(phantom_config_get "SERVER_HOST" 2>/dev/null || echo "")
     http_proxy_port=$(phantom_config_get "HTTP_PROXY_PORT" 2>/dev/null || echo "8080")
@@ -61,26 +20,99 @@ phantom_doctor_run() {
         proxy_host="127.0.0.1"
     fi
 
+    # 1. Check dependencies
+    echo -e "${BOLD}Dependencies${NC}"
+    _doctor_check "nc (netcat) installed" \
+        "command -v nc &>/dev/null" \
+        "Netcat should be pre-installed on macOS"
+    issues=$((issues + $?))
+
+    _doctor_check "curl installed" \
+        "command -v curl &>/dev/null" \
+        "Install with: brew install curl"
+    issues=$((issues + $?))
+
+    if [ "$connection_mode" = "tunnel" ]; then
+        _doctor_check "ssh installed" \
+            "command -v ssh &>/dev/null" \
+            "SSH should be pre-installed on macOS"
+        issues=$((issues + $?))
+
+        _doctor_check "autossh installed" \
+            "command -v autossh &>/dev/null" \
+            "Install with: brew install autossh (needed for tunnel mode)"
+        issues=$((issues + $?))
+    else
+        echo -e "  ${CYAN}[skip]${NC} ssh/autossh (not needed in direct mode)"
+    fi
+
+    # 2. Check config
+    echo ""
+    echo -e "${BOLD}Configuration${NC}"
+    _doctor_check "Config file exists" \
+        "[ -f '$PHANTOM_CONFIG' ]" \
+        "Run: phantom setup <VPS_IP>"
+    issues=$((issues + $?))
+
+    if [ -n "$server_host" ]; then
+        echo -e "  ${GREEN}[pass]${NC} SERVER_HOST = ${CYAN}${server_host}${NC}"
+    else
+        echo -e "  ${RED}[fail]${NC} SERVER_HOST not set"
+        echo -e "         ${YELLOW}Fix: phantom setup <VPS_IP>${NC}"
+        issues=$((issues + 1))
+    fi
+
+    echo -e "  ${CYAN}[info]${NC} Mode: ${BOLD}${connection_mode}${NC}, Port: ${http_proxy_port}"
+
+    # 3. Tunnel checks (only in tunnel mode)
+    if [ "$connection_mode" = "tunnel" ]; then
+        echo ""
+        echo -e "${BOLD}SSH Tunnel${NC}"
+        local ssh_key
+        ssh_key=$(phantom_config_get "SSH_KEY" 2>/dev/null || echo "$HOME/.ssh/id_rsa")
+        _doctor_check "SSH key exists ($ssh_key)" \
+            "[ -f '$ssh_key' ]" \
+            "Generate with: ssh-keygen -t ed25519 -f $ssh_key"
+        issues=$((issues + $?))
+
+        _doctor_check "Tunnel is connected" \
+            "_tunnel_is_alive" \
+            "Run: phantom connect"
+        issues=$((issues + $?))
+    fi
+
+    # 4. Check proxy connectivity
+    echo ""
+    echo -e "${BOLD}Proxy Connection${NC}"
     _doctor_check "HTTP proxy reachable (${proxy_host}:${http_proxy_port})" \
         "nc -z -w 3 $proxy_host $http_proxy_port 2>/dev/null" \
-        "Ensure HTTP CONNECT proxy is running on the VPS."
+        "Check VPS: ssh root@${server_host} systemctl status phantom-http-proxy"
     issues=$((issues + $?))
 
-    # 6. Check sandbox
+    # Health API check
+    if nc -z -w 3 "$proxy_host" "$http_proxy_port" 2>/dev/null; then
+        local health_resp
+        health_resp=$(curl -s --max-time 5 "http://${proxy_host}:${http_proxy_port}/api/health" 2>/dev/null || echo "")
+        if echo "$health_resp" | grep -q '"ok"' 2>/dev/null; then
+            echo -e "  ${GREEN}[pass]${NC} Health API responds OK"
+        else
+            echo -e "  ${YELLOW}[warn]${NC} Health API unavailable (proxy may still work)"
+        fi
+    fi
+
+    # 5. Check sandbox
     _doctor_check "Shadow sandbox exists" \
         "[ -d '$SHADOW_HOME' ]" \
-        "Run: phantom init"
+        "Run: phantom setup <VPS_IP>"
     issues=$((issues + $?))
 
-    # 7. Network test (only if proxy is reachable)
+    # 6. Network test (only if proxy is reachable)
     if nc -z -w 3 "$proxy_host" "$http_proxy_port" 2>/dev/null; then
         echo ""
         echo -e "${BOLD}Network Tests${NC}"
-        echo "────────────────────────────────────────"
 
         local proxy_url="http://${proxy_host}:${http_proxy_port}"
 
-        # Check external IP through proxy
         local proxy_ip
         proxy_ip=$(curl -s --max-time 10 --proxy "$proxy_url" https://ifconfig.me 2>/dev/null || echo "")
         local local_ip
@@ -100,10 +132,9 @@ phantom_doctor_run() {
         fi
     fi
 
-    # 8. Proxy conflict detection
+    # 7. Proxy conflict detection
     echo ""
     echo -e "${BOLD}Conflict Detection${NC}"
-    echo "────────────────────────────────────────"
     _doctor_check_conflict "Clash" "clash"
     _doctor_check_conflict "ClashX" "clashx"
     _doctor_check_conflict "Surge" "surge"

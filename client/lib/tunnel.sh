@@ -13,7 +13,7 @@ phantom_tunnel_connect() {
 
     # Load config
     local host port socks_port ssh_key
-    host=$(phantom_config_get "SERVER_HOST") || { log_error "SERVER_HOST not configured. Run: phantom init"; return 1; }
+    host=$(phantom_config_get "SERVER_HOST") || { log_error "SERVER_HOST not configured. Run: phantom setup <VPS_IP>"; return 1; }
     port=$(phantom_config_get "SERVER_PORT") || port="22"
     socks_port=$(phantom_config_get "SOCKS_PORT") || socks_port="1080"
     ssh_key=$(phantom_config_get "SSH_KEY") || ssh_key="$HOME/.ssh/id_rsa"

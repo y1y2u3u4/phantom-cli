@@ -53,11 +53,11 @@ ${BOLD}COMMANDS${NC}
     ${GREEN}setup <IP> [--key K|--password P]${NC}   One-click configure (IP + sync credentials)
     ${GREEN}auth sync [--key K|--password P]${NC}    Sync credentials from VPS
     ${GREEN}auth status${NC}                          Check credential and connection status
-    ${GREEN}init${NC}                                 Interactive setup wizard (advanced)
-    ${GREEN}connect${NC}                              Establish SSH SOCKS5 tunnel
-    ${GREEN}disconnect${NC}                           Tear down tunnel
+    ${GREEN}config [KEY [VALUE]]${NC}                 View or modify configuration
     ${GREEN}status${NC}                               Show connection status and config
     ${GREEN}doctor${NC}                               Full diagnostic check
+    ${GREEN}connect${NC}                              Establish SSH tunnel (tunnel mode)
+    ${GREEN}disconnect${NC}                           Tear down tunnel
     ${GREEN}<cmd> [args]${NC}                         Hijack and execute command through proxy
 
 ${BOLD}AUTH OPTIONS${NC}
@@ -72,6 +72,8 @@ ${BOLD}EXAMPLES${NC}
     phantom auth sync --key myapikey          # Sync credentials via API key
     phantom auth sync --password X            # Sync credentials via SSH password (legacy)
     phantom auth status                        # Check credentials
+    phantom config                             # View all configuration
+    phantom config API_KEY sk-phantom-xxx      # Set API key
     phantom doctor                             # Diagnostics
 
 ${BOLD}CONFIG${NC}
@@ -84,37 +86,51 @@ EOF
 
 # ── Setup command (one-click) ──────────────────────────────────────
 phantom_setup() {
+    # Handle --help
+    if [[ "${1:-}" == "--help" ]] || [[ "${1:-}" == "-h" ]]; then
+        cat <<EOF
+${BOLD}phantom setup${NC} - One-click VPS configuration
+
+${BOLD}USAGE${NC}
+    phantom setup <VPS_IP> [OPTIONS]
+
+${BOLD}OPTIONS${NC}
+    ${GREEN}--key API_KEY${NC}       API key authentication (recommended)
+    ${GREEN}--password PASS${NC}     SSH password authentication (legacy)
+    ${GREEN}--port PORT${NC}         HTTP proxy port (default: auto-detect 8080/8888/3128)
+
+${BOLD}EXAMPLES${NC}
+    phantom setup 1.2.3.4 --key sk-phantom-xxx
+    phantom setup 1.2.3.4 --port 9090 --key sk-phantom-xxx
+    phantom setup 1.2.3.4 --password secretpass
+
+EOF
+        return 0
+    fi
+
     if [ $# -eq 0 ]; then
         log_error "VPS IP is required."
-        log_info "Usage: phantom setup <VPS_IP> [--key API_KEY | --password PASSWORD]"
+        log_info "Usage: phantom setup <VPS_IP> [--key API_KEY] [--port PORT]"
+        log_info "  Run ${GREEN}phantom setup --help${NC} for details."
         return 1
     fi
 
     local host="$1"
     shift
 
-    local api_key="" password=""
+    local api_key="" password="" custom_port=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --key)
-                if [ -z "${2:-}" ]; then
-                    log_error "--key requires a value"
-                    return 1
-                fi
-                api_key="$2"
-                shift 2
-                ;;
+                if [ -z "${2:-}" ]; then log_error "--key requires a value"; return 1; fi
+                api_key="$2"; shift 2 ;;
             --password)
-                if [ -z "${2:-}" ]; then
-                    log_error "--password requires a value"
-                    return 1
-                fi
-                password="$2"
-                shift 2
-                ;;
-            *)
-                shift
-                ;;
+                if [ -z "${2:-}" ]; then log_error "--password requires a value"; return 1; fi
+                password="$2"; shift 2 ;;
+            --port)
+                if [ -z "${2:-}" ]; then log_error "--port requires a value"; return 1; fi
+                custom_port="$2"; shift 2 ;;
+            *) shift ;;
         esac
     done
 
@@ -122,21 +138,24 @@ phantom_setup() {
     echo "════════════════════════════════════════════"
     echo ""
 
-    # Step 1: Detect HTTP proxy port
-    log_info "Detecting HTTP proxy on $host..."
+    # Step 1: Determine HTTP proxy port
     local http_proxy_port=""
-    for port in 8080 8888 3128; do
-        if nc -z -w 3 "$host" "$port" 2>/dev/null; then
-            http_proxy_port="$port"
-            log_success "Found HTTP proxy on port $port"
-            break
+    if [ -n "$custom_port" ]; then
+        http_proxy_port="$custom_port"
+        log_info "Using specified port $http_proxy_port"
+    else
+        log_info "Detecting HTTP proxy on $host..."
+        for port in 8080 8888 3128; do
+            if nc -z -w 3 "$host" "$port" 2>/dev/null; then
+                http_proxy_port="$port"
+                log_success "Found HTTP proxy on port $port"
+                break
+            fi
+        done
+        if [ -z "$http_proxy_port" ]; then
+            http_proxy_port="8080"
+            log_warn "No HTTP proxy detected. Using default port $http_proxy_port"
         fi
-    done
-
-    if [ -z "$http_proxy_port" ]; then
-        log_warn "No HTTP proxy detected on standard ports (8080, 8888, 3128)"
-        http_proxy_port="8080"
-        log_info "Using default port $http_proxy_port"
     fi
 
     # Step 2: Write config
@@ -167,19 +186,24 @@ phantom_setup() {
     elif [ -n "$password" ]; then
         sync_args+=(--password "$password")
     fi
-    phantom_auth_sync "${sync_args[@]}" || log_warn "Credential sync failed. You can retry: phantom auth sync --key YOUR_API_KEY"
+
+    if ! phantom_auth_sync "${sync_args[@]}" 2>/dev/null; then
+        log_warn "Credential sync incomplete — this is OK if VPS hasn't done OAuth yet."
+        log_info "  You can retry anytime: ${GREEN}phantom auth sync --key YOUR_KEY${NC}"
+        log_info "  Or check status:       ${GREEN}phantom auth status${NC}"
+    fi
 
     # Step 5: Verify proxy connection
     echo ""
     log_info "Verifying proxy connection..."
-    local proxy_url="http://${host}:${http_proxy_port}"
-    local proxy_ip
-    proxy_ip=$(curl -s --max-time 10 --proxy "$proxy_url" https://ifconfig.me 2>/dev/null || echo "")
-
-    if [ -n "$proxy_ip" ]; then
-        log_success "Proxy working! External IP: $proxy_ip"
+    if curl -s --max-time 5 "http://${host}:${http_proxy_port}/api/health" 2>/dev/null | grep -q '"ok"'; then
+        log_success "Proxy is healthy!"
+    elif nc -z -w 3 "$host" "$http_proxy_port" 2>/dev/null; then
+        log_success "Proxy port is reachable (health check unavailable)"
     else
-        log_warn "Could not verify proxy. It may still work for Claude."
+        log_error "Cannot reach proxy at ${host}:${http_proxy_port}"
+        log_info "  Check VPS: ssh root@${host} systemctl status phantom-http-proxy"
+        log_info "  Diagnostics: ${GREEN}phantom doctor${NC}"
     fi
 
     # Summary
@@ -216,9 +240,28 @@ phantom_auth() {
         status)
             phantom_auth_status "$@"
             ;;
+        --help|-h)
+            cat <<EOF
+${BOLD}phantom auth${NC} - Credential management
+
+${BOLD}USAGE${NC}
+    phantom auth                          Show credential status
+    phantom auth sync [--key K]           Sync credentials from VPS
+    phantom auth status                   Check credential and connection status
+
+${BOLD}OPTIONS${NC}
+    ${GREEN}--key API_KEY${NC}       API key authentication (recommended)
+    ${YELLOW}--password PASS${NC}     SSH password authentication (legacy)
+
+${BOLD}EXAMPLES${NC}
+    phantom auth sync --key sk-phantom-xxx
+    phantom auth status
+
+EOF
+            ;;
         *)
             log_error "Unknown auth command: $subcmd"
-            log_info "Usage: phantom auth [sync|status]"
+            log_info "Usage: phantom auth [sync|status] (see: phantom auth --help)"
             return 1
             ;;
     esac
@@ -322,6 +365,69 @@ phantom_status() {
     fi
 }
 
+# ── Config command ─────────────────────────────────────────────────
+phantom_config_cmd() {
+    if [[ "${1:-}" == "--help" ]] || [[ "${1:-}" == "-h" ]]; then
+        cat <<EOF
+${BOLD}phantom config${NC} - View or modify configuration
+
+${BOLD}USAGE${NC}
+    phantom config                Show all configuration
+    phantom config <KEY>          Get a specific value
+    phantom config <KEY> <VALUE>  Set a specific value
+
+${BOLD}KEYS${NC}
+    SERVER_HOST       VPS IP address
+    HTTP_PROXY_PORT   Proxy port (default: 8080)
+    CONNECTION_MODE   direct or tunnel
+    API_KEY           API key for authentication
+    SSH_KEY           SSH key path (tunnel mode)
+    AUTO_CONNECT      Auto-connect on launch (true/false)
+
+${BOLD}EXAMPLES${NC}
+    phantom config                          # Show all
+    phantom config SERVER_HOST              # Get server IP
+    phantom config HTTP_PROXY_PORT 9090     # Change proxy port
+    phantom config API_KEY sk-phantom-xxx   # Set API key
+
+EOF
+        return 0
+    fi
+
+    if [ $# -eq 0 ]; then
+        # Show all config
+        if [ ! -f "$PHANTOM_CONFIG" ]; then
+            log_warn "Not configured. Run: phantom setup <VPS_IP>"
+            return 1
+        fi
+        echo -e "${BOLD}Phantom Configuration${NC} ($PHANTOM_CONFIG)"
+        echo "────────────────────────────────────────"
+        # Show non-comment, non-empty lines with masking for sensitive values
+        while IFS='=' read -r key value; do
+            [[ "$key" =~ ^#.*$ ]] && continue
+            [[ -z "$key" ]] && continue
+            if [[ "$key" == "API_KEY" ]] && [[ -n "$value" ]]; then
+                echo -e "  ${CYAN}${key}${NC} = ${value:0:12}...${value: -4}"
+            else
+                echo -e "  ${CYAN}${key}${NC} = ${value:-${YELLOW}(not set)${NC}}"
+            fi
+        done < "$PHANTOM_CONFIG"
+        return 0
+    fi
+
+    if [ $# -eq 1 ]; then
+        # Get a specific key
+        local val
+        val=$(phantom_config_get "$1" 2>/dev/null) || { log_error "$1 is not set"; return 1; }
+        echo "$val"
+        return 0
+    fi
+
+    # Set a key
+    phantom_config_set "$1" "$2"
+    log_success "$1 = $2"
+}
+
 # ── Main router ─────────────────────────────────────────────────────
 main() {
     # No arguments → default to launching claude
@@ -341,6 +447,10 @@ main() {
         auth)
             shift
             phantom_auth "$@"
+            ;;
+        config)
+            shift
+            phantom_config_cmd "$@"
             ;;
         init)
             shift

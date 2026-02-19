@@ -126,8 +126,8 @@ IDLE_TIMEOUT_MAX = 60             # max seconds idle before auto-close (randomis
 IDLE_CHECK_INTERVAL = 10          # socket timeout for periodic idle checks
 
 # Claude Code usage query via tmux
-USAGE_QUERY_MIN_INTERVAL = 600    # 10 minutes minimum between queries
-USAGE_QUERY_MAX_INTERVAL = 1800   # 30 minutes maximum
+USAGE_QUERY_MIN_INTERVAL = 1800   # 30 minutes minimum between queries
+USAGE_QUERY_MAX_INTERVAL = 3600   # 60 minutes maximum
 USAGE_QUERY_TMUX_TIMEOUT = 60     # seconds to wait for claude to render /usage
 USAGE_QUERY_TOTAL_TIMEOUT = 120   # max seconds for entire usage query per account
 CLAUDE_BIN = shutil.which("claude") or "/usr/local/bin/claude"
@@ -1304,10 +1304,12 @@ def build_quota_response(account: dict) -> dict:
 
     base["queried_at"] = cached.get("queried_at")
 
-    # Try to get profile via OAuth API (this is lightweight, cached 5min)
-    profile = fetch_anthropic_profile(account)
-    if profile:
-        org = profile.get("organization", {})
+    # Use cached profile if available (avoid triggering OAuth refresh)
+    acc_id = account["id"]
+    profile_cache = _oauth_cache.get(acc_id, {})
+    cached_profile = profile_cache.get("profile")
+    if cached_profile:
+        org = cached_profile.get("organization", {})
         org_type = org.get("organization_type", "")
         if "max" in org_type:
             base["subscription_type"] = "max"

@@ -14,7 +14,7 @@ phantom_hijack_exec() {
 
     # Load config
     local server_host http_proxy_port connection_mode
-    server_host=$(phantom_config_get "SERVER_HOST") || { log_error "SERVER_HOST not configured. Run: phantom init"; return 1; }
+    server_host=$(phantom_config_get "SERVER_HOST") || { log_error "SERVER_HOST not configured. Run: phantom setup <VPS_IP>"; return 1; }
     http_proxy_port=$(phantom_config_get "HTTP_PROXY_PORT" 2>/dev/null || echo "8080")
     connection_mode=$(phantom_config_get "CONNECTION_MODE" 2>/dev/null || echo "direct")
 
@@ -45,6 +45,9 @@ phantom_hijack_exec() {
     if [ ! -d "$SHADOW_HOME" ]; then
         phantom_sandbox_setup
     fi
+
+    # Auto-sync credentials if token is expired or missing
+    _hijack_ensure_credentials "$proxy_host" "$http_proxy_port"
 
     # Build HTTP proxy URL (embed API key for upstream account routing)
     local api_key proxy_url
@@ -83,4 +86,78 @@ phantom_hijack_exec() {
     fi
 
     exec "$@"
+}
+
+# Check if local credentials are valid; auto-sync from VPS if expired
+_hijack_ensure_credentials() {
+    local proxy_host="$1" http_proxy_port="$2"
+    local cred_file="$SHADOW_HOME/.claude/.credentials.json"
+
+    # Skip if no credentials file exists yet (first run)
+    if [ ! -f "$cred_file" ]; then
+        log_info "No local credentials found. Syncing from VPS..."
+        _hijack_sync_credentials "$proxy_host" "$http_proxy_port"
+        return
+    fi
+
+    # Check if token is expired (python one-liner)
+    local expired
+    expired=$(python3 -c "
+import json, datetime, sys
+try:
+    d = json.load(open('$cred_file'))
+    exp = d.get('claudeAiOauth', {}).get('expiresAt', 0)
+    now_ms = int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000)
+    print('yes' if now_ms > exp else 'no')
+except: print('yes')
+" 2>/dev/null || echo "yes")
+
+    if [ "$expired" = "yes" ]; then
+        log_warn "OAuth token expired. Syncing fresh credentials..."
+        _hijack_sync_credentials "$proxy_host" "$http_proxy_port"
+    fi
+}
+
+# Download credentials from VPS via /api/credentials
+_hijack_sync_credentials() {
+    local proxy_host="$1" http_proxy_port="$2"
+    local api_key
+    api_key=$(phantom_config_get "API_KEY" 2>/dev/null || echo "")
+
+    if [ -z "$api_key" ]; then
+        log_warn "No API_KEY configured — cannot auto-sync credentials"
+        return 1
+    fi
+
+    local resp
+    resp=$(curl -s --max-time 15 \
+        -H "Authorization: Bearer $api_key" \
+        "http://${proxy_host}:${http_proxy_port}/api/credentials" 2>/dev/null)
+
+    if [ -z "$resp" ]; then
+        log_warn "Could not reach VPS for credential sync"
+        return 1
+    fi
+
+    echo "$resp" | python3 -c "
+import json, sys, os
+resp = json.load(sys.stdin)
+if 'error' in resp:
+    print(f'Sync failed: {resp[\"error\"]}', file=sys.stderr)
+    sys.exit(1)
+files = resp.get('files', {})
+shadow = '$SHADOW_HOME'
+for rel_path, content in files.items():
+    full_path = os.path.join(shadow, rel_path)
+    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+    with open(full_path, 'w') as f:
+        f.write(content)
+    os.chmod(full_path, 0o600)
+" 2>/dev/null
+
+    if [ $? -eq 0 ]; then
+        log_success "Credentials synced from VPS"
+    else
+        log_warn "Credential sync failed — Claude Code may prompt for login"
+    fi
 }
