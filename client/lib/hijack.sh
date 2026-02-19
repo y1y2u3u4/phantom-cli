@@ -79,6 +79,15 @@ phantom_hijack_exec() {
     unset CLAUDE_CODE_ENTRYPOINT
     unset CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
 
+    # Clear Anthropic env vars that would override OAuth authentication
+    # (user may have API keys or custom base URLs for their own use)
+    unset ANTHROPIC_API_KEY
+    unset ANTHROPIC_BASE_URL
+    unset ANTHROPIC_AUTH_TOKEN
+    unset CLAUDE_API_KEY
+    unset CLAUDE_CODE_USE_BEDROCK
+    unset CLAUDE_CODE_USE_VERTEX
+
     # Source phantom profile if exists (custom env vars)
     if [ -f "$SHADOW_HOME/.phantom_profile" ]; then
         source "$SHADOW_HOME/.phantom_profile"
