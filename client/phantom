@@ -50,7 +50,7 @@ ${BOLD}USAGE${NC}
     phantom <command> [options]   Run a subcommand
 
 ${BOLD}COMMANDS${NC}
-    ${GREEN}setup <IP> [--key K|--password P]${NC}   One-click configure (IP + sync credentials)
+    ${GREEN}setup <IP> [--key K] [--ssh-password P]${NC}  One-click configure (auto-detect network)
     ${GREEN}auth sync [--key K|--password P]${NC}    Sync credentials from VPS
     ${GREEN}auth status${NC}                          Check credential and connection status
     ${GREEN}config [KEY [VALUE]]${NC}                 View or modify configuration
@@ -68,6 +68,7 @@ ${BOLD}EXAMPLES${NC}
     phantom                                    # Start Claude interactive mode
     phantom -p "hello"                         # Single query (pass-through to Claude)
     phantom setup 1.2.3.4 --key myapikey      # One-click setup with API key (recommended)
+    phantom setup 1.2.3.4 --key K --ssh-password P  # Setup with SSH tunnel fallback
     phantom setup 1.2.3.4 --password X        # Setup with SSH password (legacy)
     phantom auth sync --key myapikey          # Sync credentials via API key
     phantom auth sync --password X            # Sync credentials via SSH password (legacy)
@@ -95,12 +96,14 @@ ${BOLD}USAGE${NC}
     phantom setup <VPS_IP> [OPTIONS]
 
 ${BOLD}OPTIONS${NC}
-    ${GREEN}--key API_KEY${NC}       API key authentication (recommended)
-    ${GREEN}--password PASS${NC}     SSH password authentication (legacy)
-    ${GREEN}--port PORT${NC}         HTTP proxy port (default: auto-detect 8080/8888/3128)
+    ${GREEN}--key API_KEY${NC}           API key authentication (recommended)
+    ${GREEN}--ssh-password PASS${NC}     SSH password for tunnel mode (auto-used if CONNECT blocked)
+    ${GREEN}--password PASS${NC}         SSH password authentication (legacy credential sync)
+    ${GREEN}--port PORT${NC}             HTTP proxy port (default: auto-detect 8080/8888/3128)
 
 ${BOLD}EXAMPLES${NC}
     phantom setup 1.2.3.4 --key sk-phantom-xxx
+    phantom setup 1.2.3.4 --key sk-phantom-xxx --ssh-password rootpass
     phantom setup 1.2.3.4 --port 9090 --key sk-phantom-xxx
     phantom setup 1.2.3.4 --password secretpass
 
@@ -118,12 +121,15 @@ EOF
     local host="$1"
     shift
 
-    local api_key="" password="" custom_port=""
+    local api_key="" password="" ssh_password="" custom_port=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --key)
                 if [ -z "${2:-}" ]; then log_error "--key requires a value"; return 1; fi
                 api_key="$2"; shift 2 ;;
+            --ssh-password)
+                if [ -z "${2:-}" ]; then log_error "--ssh-password requires a value"; return 1; fi
+                ssh_password="$2"; shift 2 ;;
             --password)
                 if [ -z "${2:-}" ]; then log_error "--password requires a value"; return 1; fi
                 password="$2"; shift 2 ;;
@@ -162,14 +168,18 @@ EOF
     log_info "Writing configuration..."
     phantom_config_init
     phantom_config_set "SERVER_HOST" "$host"
+    phantom_config_set "VPS_HOST" "$host"
     phantom_config_set "SERVER_PORT" "22"
     phantom_config_set "HTTP_PROXY_PORT" "$http_proxy_port"
     phantom_config_set "SSH_KEY" "~/.ssh/id_rsa"
-    phantom_config_set "CONNECTION_MODE" "direct"
+    phantom_config_set "CONNECTION_MODE" "auto"
     phantom_config_set "AUTO_CONNECT" "true"
     phantom_config_set "AUTO_RECONNECT" "true"
     if [ -n "$api_key" ]; then
         phantom_config_set "API_KEY" "$api_key"
+    fi
+    if [ -n "$ssh_password" ]; then
+        phantom_config_set "SSH_PASSWORD" "$ssh_password"
     fi
     log_success "Config saved to $PHANTOM_CONFIG"
 
@@ -193,7 +203,7 @@ EOF
         log_info "  Or check status:       ${GREEN}phantom auth status${NC}"
     fi
 
-    # Step 5: Verify proxy connection
+    # Step 5: Verify proxy connection and detect CONNECT interception
     echo ""
     log_info "Verifying proxy connection..."
     if curl -s --max-time 5 "http://${host}:${http_proxy_port}/api/health" 2>/dev/null | grep -q '"ok"'; then
@@ -204,6 +214,37 @@ EOF
         log_error "Cannot reach proxy at ${host}:${http_proxy_port}"
         log_info "  Check VPS: ssh root@${host} systemctl status phantom-http-proxy"
         log_info "  Diagnostics: ${GREEN}phantom doctor${NC}"
+    fi
+
+    # Step 5b: Test CONNECT tunneling (detect Cloudflare/enterprise interception)
+    log_info "Testing CONNECT tunnel..."
+    local connect_proxy_url="http://${host}:${http_proxy_port}"
+    if [ -n "$api_key" ]; then
+        connect_proxy_url="http://${api_key}:x@${host}:${http_proxy_port}"
+    fi
+    local connect_resp
+    connect_resp=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" \
+        --proxy "$connect_proxy_url" \
+        "https://api.anthropic.com/api/oauth/usage" 2>/dev/null) || true
+    [ -z "$connect_resp" ] && connect_resp="000"
+
+    if [ "$connect_resp" != "000" ] && [ "$connect_resp" != "400" ]; then
+        log_success "CONNECT tunnel works (direct mode)"
+    else
+        log_warn "CONNECT blocked (HTTP $connect_resp) — likely Cloudflare/enterprise proxy"
+        if [ -n "$ssh_password" ] || [ -f "$HOME/.ssh/id_rsa" ] || [ -f "$HOME/.ssh/id_ed25519" ]; then
+            log_info "Auto-switching to SSH tunnel mode..."
+            phantom_config_set "CONNECTION_MODE" "auto"
+            if phantom_tunnel_connect 2>/dev/null; then
+                log_success "SSH tunnel established! Will use tunnel mode automatically."
+            else
+                log_warn "SSH tunnel failed. You may need: phantom config SSH_PASSWORD <vps_password>"
+            fi
+        else
+            log_warn "No SSH credentials available for tunnel fallback."
+            log_info "  Fix: phantom config SSH_PASSWORD <vps_password>"
+            log_info "  Or:  brew install hudochenkov/sshpass/sshpass"
+        fi
     fi
 
     # Summary
@@ -304,20 +345,31 @@ phantom_init() {
 
     # Connection mode
     local current_mode
-    current_mode=$(phantom_config_get "CONNECTION_MODE" 2>/dev/null || echo "direct")
+    current_mode=$(phantom_config_get "CONNECTION_MODE" 2>/dev/null || echo "auto")
     echo ""
     echo "Connection mode:"
-    echo "  direct  - Connect to VPS HTTP proxy directly (simpler, recommended)"
-    echo "  tunnel  - SSH tunnel to VPS (more secure, encrypts traffic)"
-    read -rp "Connection mode (direct/tunnel) [${current_mode}]: " input_mode
+    echo "  auto    - Auto-detect (recommended: tries direct, falls back to SSH tunnel)"
+    echo "  direct  - Connect to VPS HTTP proxy directly"
+    echo "  tunnel  - Always use SSH tunnel to VPS"
+    read -rp "Connection mode (auto/direct/tunnel) [${current_mode}]: " input_mode
     local connection_mode="${input_mode:-$current_mode}"
+
+    # SSH password (for tunnel/auto mode)
+    local current_ssh_password
+    current_ssh_password=$(phantom_config_get "SSH_PASSWORD" 2>/dev/null || echo "")
+    read -rp "VPS SSH password (for tunnel) [${current_ssh_password:+****}]: " input_ssh_password
+    local ssh_password_val="${input_ssh_password:-$current_ssh_password}"
 
     # Save config
     phantom_config_set "SERVER_HOST" "$host"
+    phantom_config_set "VPS_HOST" "$host"
     phantom_config_set "SERVER_PORT" "$port"
     phantom_config_set "HTTP_PROXY_PORT" "$http_proxy_port"
     phantom_config_set "SSH_KEY" "$ssh_key"
     phantom_config_set "CONNECTION_MODE" "$connection_mode"
+    if [ -n "$ssh_password_val" ]; then
+        phantom_config_set "SSH_PASSWORD" "$ssh_password_val"
+    fi
 
     echo ""
     log_success "Configuration saved to $PHANTOM_CONFIG"
@@ -354,14 +406,22 @@ phantom_status() {
     echo ""
 
     # Proxy reachability
-    if [ "$connection_mode" = "direct" ]; then
+    if [ "$connection_mode" = "tunnel" ]; then
+        phantom_tunnel_status
+    elif [ "$connection_mode" = "auto" ]; then
+        if _tunnel_is_alive; then
+            phantom_tunnel_status
+        elif nc -z -w 3 "$host" "$http_proxy_port" 2>/dev/null; then
+            echo -e "  Proxy:      ${GREEN}connected (direct)${NC}"
+        else
+            echo -e "  Proxy:      ${RED}unreachable${NC}"
+        fi
+    else
         if nc -z -w 3 "$host" "$http_proxy_port" 2>/dev/null; then
             echo -e "  Proxy:      ${GREEN}connected${NC}"
         else
             echo -e "  Proxy:      ${RED}unreachable${NC}"
         fi
-    else
-        phantom_tunnel_status
     fi
 }
 
@@ -379,9 +439,10 @@ ${BOLD}USAGE${NC}
 ${BOLD}KEYS${NC}
     SERVER_HOST       VPS IP address
     HTTP_PROXY_PORT   Proxy port (default: 8080)
-    CONNECTION_MODE   direct or tunnel
+    CONNECTION_MODE   auto, direct, or tunnel
     API_KEY           API key for authentication
     SSH_KEY           SSH key path (tunnel mode)
+    SSH_PASSWORD      SSH password (tunnel mode, used with sshpass)
     AUTO_CONNECT      Auto-connect on launch (true/false)
 
 ${BOLD}EXAMPLES${NC}
@@ -408,6 +469,8 @@ EOF
             [[ -z "$key" ]] && continue
             if [[ "$key" == "API_KEY" ]] && [[ -n "$value" ]]; then
                 echo -e "  ${CYAN}${key}${NC} = ${value:0:12}...${value: -4}"
+            elif [[ "$key" == "SSH_PASSWORD" ]] && [[ -n "$value" ]]; then
+                echo -e "  ${CYAN}${key}${NC} = ****"
             else
                 echo -e "  ${CYAN}${key}${NC} = ${value:-${YELLOW}(not set)${NC}}"
             fi

@@ -16,26 +16,40 @@ phantom_hijack_exec() {
     local server_host http_proxy_port connection_mode
     server_host=$(phantom_config_get "SERVER_HOST") || { log_error "SERVER_HOST not configured. Run: phantom setup <VPS_IP>"; return 1; }
     http_proxy_port=$(phantom_config_get "HTTP_PROXY_PORT" 2>/dev/null || echo "8080")
-    connection_mode=$(phantom_config_get "CONNECTION_MODE" 2>/dev/null || echo "direct")
+    connection_mode=$(phantom_config_get "CONNECTION_MODE" 2>/dev/null || echo "auto")
 
+    # Determine proxy_host based on connection mode
     local proxy_host
-    if [ "$connection_mode" = "direct" ]; then
-        proxy_host="$server_host"
-    else
-        # Tunnel mode: SSH tunnel forwards HTTP proxy port to localhost
-        proxy_host="127.0.0.1"
-        phantom_tunnel_ensure || return 1
-    fi
+    case "$connection_mode" in
+        direct)
+            proxy_host="$server_host"
+            ;;
+        tunnel)
+            proxy_host="127.0.0.1"
+            phantom_tunnel_ensure || return 1
+            ;;
+        auto)
+            # Auto-detect: try direct first, fall back to tunnel
+            proxy_host=$(_hijack_auto_connect "$server_host" "$http_proxy_port")
+            if [ "$proxy_host" = "FAIL" ]; then
+                return 1
+            fi
+            ;;
+        *)
+            log_error "Unknown CONNECTION_MODE: $connection_mode"
+            return 1
+            ;;
+    esac
 
     # Verify HTTP proxy is reachable
     if ! nc -z -w 3 "$proxy_host" "$http_proxy_port" 2>/dev/null; then
         log_error "Cannot reach HTTP proxy at ${proxy_host}:${http_proxy_port}"
         log_info "Possible fixes:"
-        if [ "$connection_mode" = "direct" ]; then
+        if [ "$proxy_host" = "127.0.0.1" ]; then
+            log_info "  1. Reconnect tunnel: phantom connect"
+        else
             log_info "  1. Check VPS: ssh root@${server_host} systemctl status phantom-http-proxy"
             log_info "  2. Restart proxy: ssh root@${server_host} systemctl restart phantom-http-proxy"
-        else
-            log_info "  1. Ensure tunnel is connected: phantom connect"
         fi
         log_info "  3. Run diagnostics: phantom doctor"
         return 1
@@ -96,6 +110,81 @@ phantom_hijack_exec() {
 
     exec "$@"
 }
+
+# ── Auto-connection logic ──────────────────────────────────────────
+
+# Auto-detect whether to use direct or tunnel mode
+# Returns the proxy_host to use (server_host or 127.0.0.1), or "FAIL"
+_hijack_auto_connect() {
+    local server_host="$1" http_proxy_port="$2"
+    local cache_file="$PHANTOM_DIR/connect_mode_cache"
+
+    # NOTE: This function is called inside $(), so all log output must go to
+    # stderr (>&2) to avoid polluting the captured return value (proxy_host).
+
+    # Check cache (valid for 24 hours)
+    if [ -f "$cache_file" ]; then
+        local cached_mode cached_time now
+        cached_mode=$(head -1 "$cache_file" 2>/dev/null || echo "")
+        cached_time=$(tail -1 "$cache_file" 2>/dev/null || echo "0")
+        now=$(date +%s)
+        if [ $((now - cached_time)) -lt 86400 ] && [ -n "$cached_mode" ]; then
+            if [ "$cached_mode" = "tunnel" ]; then
+                phantom_tunnel_ensure >&2 || { echo "FAIL"; return; }
+                echo "127.0.0.1"
+            else
+                echo "$server_host"
+            fi
+            return
+        fi
+    fi
+
+    # Quick CONNECT test (3s timeout) — use API key if available
+    local api_key proxy_test_url
+    api_key=$(phantom_config_get "API_KEY" 2>/dev/null || echo "")
+    if [ -n "$api_key" ]; then
+        proxy_test_url="http://${api_key}:x@${server_host}:${http_proxy_port}"
+    else
+        proxy_test_url="http://${server_host}:${http_proxy_port}"
+    fi
+
+    log_info "Detecting connection mode..." >&2
+    local test_resp
+    test_resp=$(curl -s --max-time 4 -o /dev/null -w "%{http_code}" \
+        --proxy "$proxy_test_url" \
+        "https://api.anthropic.com/api/oauth/usage" 2>/dev/null) || true
+    [ -z "$test_resp" ] && test_resp="000"
+
+    if [ "$test_resp" != "000" ] && [ "$test_resp" != "400" ]; then
+        # Direct CONNECT works
+        log_success "Direct connection OK" >&2
+        _hijack_cache_mode "direct"
+        echo "$server_host"
+    else
+        # CONNECT blocked — try SSH tunnel
+        log_warn "Direct CONNECT blocked (HTTP $test_resp). Trying SSH tunnel..." >&2
+        if phantom_tunnel_ensure >&2; then
+            log_success "SSH tunnel established" >&2
+            _hijack_cache_mode "tunnel"
+            echo "127.0.0.1"
+        else
+            log_error "Cannot connect: direct CONNECT blocked and SSH tunnel failed"
+            log_info "  Fix: phantom config SSH_PASSWORD <vps_password>" >&2
+            log_info "  Or:  install sshpass: brew install hudochenkov/sshpass/sshpass" >&2
+            echo "FAIL"
+        fi
+    fi
+}
+
+# Cache the detected connection mode
+_hijack_cache_mode() {
+    local mode="$1"
+    local cache_file="$PHANTOM_DIR/connect_mode_cache"
+    echo "$mode" > "$cache_file"
+    date +%s >> "$cache_file"
+}
+
+# ── Credential sync ────────────────────────────────────────────────
 
 # Check if local credentials are valid; auto-sync from VPS if expired
 _hijack_ensure_credentials() {

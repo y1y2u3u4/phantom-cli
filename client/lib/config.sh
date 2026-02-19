@@ -21,14 +21,18 @@ HTTP_PROXY_PORT=8080
 
 # Authentication
 SSH_KEY=~/.ssh/id_rsa
+SSH_PASSWORD=
 API_KEY=
 
 # Options
 AUTO_CONNECT=true
 AUTO_RECONNECT=true
 
-# Connection mode: "tunnel" (SSH tunnel) or "direct" (connect to VPS directly)
-CONNECTION_MODE=direct
+# Connection mode: "auto" (detect), "tunnel" (SSH tunnel), or "direct" (connect to VPS directly)
+CONNECTION_MODE=auto
+
+# VPS host (real VPS IP, used for tunnel when SERVER_HOST is 127.0.0.1)
+VPS_HOST=
 DEFAULTS
         log_info "Created default config at $PHANTOM_CONFIG"
     fi
