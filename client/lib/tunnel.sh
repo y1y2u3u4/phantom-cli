@@ -163,10 +163,24 @@ _tunnel_start_port_forward() {
     fi
 
     if [ -n "$ssh_password" ] && [ -n "$sshpass_cmd" ]; then
+        # Method 1: sshpass (best option)
         "$sshpass_cmd" -p "$ssh_password" ssh $ssh_opts -f -N \
             -L "${proxy_port}:localhost:${proxy_port}" \
             -p "$ssh_port" "root@${host}" 2>/dev/null
+    elif [ -n "$ssh_password" ]; then
+        # Method 2: SSH_ASKPASS (no extra deps needed)
+        local askpass_script="$PHANTOM_DIR/.ssh_askpass"
+        printf '#!/bin/sh\necho "%s"\n' "$ssh_password" > "$askpass_script"
+        chmod +x "$askpass_script"
+        SSH_ASKPASS="$askpass_script" SSH_ASKPASS_REQUIRE="force" \
+            ssh $ssh_opts -f -N \
+            -L "${proxy_port}:localhost:${proxy_port}" \
+            -p "$ssh_port" "root@${host}" 2>/dev/null
+        local rc=$?
+        rm -f "$askpass_script"
+        return $rc
     elif [ -f "$ssh_key" ]; then
+        # Method 3: SSH key
         ssh $ssh_opts -f -N -i "$ssh_key" \
             -L "${proxy_port}:localhost:${proxy_port}" \
             -p "$ssh_port" "root@${host}" 2>/dev/null
