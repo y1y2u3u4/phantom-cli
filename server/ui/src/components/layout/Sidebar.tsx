@@ -61,34 +61,57 @@ const NAV_ITEMS: NavItem[] = [
   },
 ];
 
-export function Sidebar() {
+interface SidebarProps {
+  mobileOpen?: boolean;
+  onClose?: () => void;
+}
+
+export function Sidebar({ mobileOpen, onClose }: SidebarProps) {
   const pathname = usePathname();
   const { isAdmin } = useAuth();
 
   const visibleItems = NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin);
 
+  const navContent = (
+    <nav className="p-3 space-y-1">
+      {visibleItems.map((item) => {
+        const active = pathname === item.href || pathname.startsWith(item.href + '/');
+        return (
+          <Link
+            key={item.href}
+            href={item.href}
+            onClick={onClose}
+            className={classNames(
+              'flex items-center gap-3 px-3 py-2 text-sm rounded-lg transition-colors',
+              active
+                ? 'bg-accent/10 text-accent font-medium'
+                : 'text-text-secondary hover:text-text-primary hover:bg-border/30',
+            )}
+          >
+            {item.icon}
+            {item.label}
+          </Link>
+        );
+      })}
+    </nav>
+  );
+
   return (
-    <aside className="w-56 shrink-0 border-r border-border bg-card hidden md:block">
-      <nav className="p-3 space-y-1">
-        {visibleItems.map((item) => {
-          const active = pathname === item.href || pathname.startsWith(item.href + '/');
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={classNames(
-                'flex items-center gap-3 px-3 py-2 text-sm rounded-lg transition-colors',
-                active
-                  ? 'bg-accent/10 text-accent font-medium'
-                  : 'text-text-secondary hover:text-text-primary hover:bg-border/30',
-              )}
-            >
-              {item.icon}
-              {item.label}
-            </Link>
-          );
-        })}
-      </nav>
-    </aside>
+    <>
+      {/* Desktop sidebar */}
+      <aside className="w-56 shrink-0 border-r border-border bg-card hidden md:block">
+        {navContent}
+      </aside>
+
+      {/* Mobile overlay */}
+      {mobileOpen && (
+        <div className="fixed inset-0 z-40 md:hidden">
+          <div className="absolute inset-0 bg-black/50 animate-fade-in" onClick={onClose} />
+          <aside className="relative w-56 h-full border-r border-border bg-card animate-slide-in-left">
+            {navContent}
+          </aside>
+        </div>
+      )}
+    </>
   );
 }

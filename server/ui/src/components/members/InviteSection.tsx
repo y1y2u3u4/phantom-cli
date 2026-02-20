@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { api } from '@/lib/api';
+import { useToast } from '@/contexts/ToastContext';
 import type { Invite } from '@/lib/types';
 import { formatDate } from '@/lib/utils';
 import { Card } from '@/components/ui/Card';
@@ -18,7 +19,9 @@ interface InviteSectionProps {
 }
 
 export function InviteSection({ invites, onRefresh }: InviteSectionProps) {
+  const toast = useToast();
   const [maxUses, setMaxUses] = useState('10');
+  const [expiresHours, setExpiresHours] = useState('168');
   const [creating, setCreating] = useState(false);
   const [newInviteUrl, setNewInviteUrl] = useState<string | null>(null);
   const [error, setError] = useState('');
@@ -32,6 +35,7 @@ export function InviteSection({ invites, onRefresh }: InviteSectionProps) {
         max_uses: parseInt(maxUses) || 10,
       });
       setNewInviteUrl(result.invite_url);
+      toast.success('Invite link created.');
       onRefresh();
     } catch (err: any) {
       setError(err.message || 'Failed to create invite.');
@@ -44,6 +48,7 @@ export function InviteSection({ invites, onRefresh }: InviteSectionProps) {
     setRevoking(token);
     try {
       await api.deleteInvite(token);
+      toast.success('Invite revoked.');
       onRefresh();
     } catch {} finally {
       setRevoking(null);

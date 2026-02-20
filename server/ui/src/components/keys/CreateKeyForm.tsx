@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
+import { useToast } from '@/contexts/ToastContext';
 import type { Account } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -15,6 +16,7 @@ interface CreateKeyFormProps {
 
 export function CreateKeyForm({ accounts, onCreated }: CreateKeyFormProps) {
   const { isAdmin } = useAuth();
+  const toast = useToast();
   const [name, setName] = useState('');
   const [accountId, setAccountId] = useState('');
   const [error, setError] = useState('');
@@ -31,6 +33,7 @@ export function CreateKeyForm({ accounts, onCreated }: CreateKeyFormProps) {
       const result = await api.createKey(trimmed, accountId || undefined);
       setName('');
       setAccountId('');
+      toast.success('API key created successfully.');
       onCreated(result.key);
     } catch (err: any) {
       setError(err.message || 'Failed to create key.');

@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { api } from '@/lib/api';
+import { useToast } from '@/contexts/ToastContext';
 import type { Member } from '@/lib/types';
 import { formatDate } from '@/lib/utils';
 import { Button } from '@/components/ui/Button';
@@ -13,6 +14,7 @@ interface MemberRowProps {
 }
 
 export function MemberRow({ member, onRefresh }: MemberRowProps) {
+  const toast = useToast();
   const [toggling, setToggling] = useState(false);
 
   const handleToggleStatus = async () => {
@@ -20,6 +22,7 @@ export function MemberRow({ member, onRefresh }: MemberRowProps) {
     try {
       const newStatus = member.status === 'active' ? 'disabled' : 'active';
       await api.updateMember(member.id, { status: newStatus });
+      toast.success(`Member ${newStatus === 'active' ? 'enabled' : 'disabled'}.`);
       onRefresh();
     } catch {} finally {
       setToggling(false);
