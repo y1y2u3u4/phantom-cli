@@ -97,22 +97,30 @@ Client → Phantom Server (:8080) → Upstream Proxy A → api.claude.ai (Accoun
 | GET | / | Session | Management UI |
 | GET | /api/health | None | Health check |
 | POST | /api/auth/setup | None (first time) | Set master password |
-| POST | /api/auth/login | Password | Login → session cookie |
-| GET | /api/auth/check | Session | Check login state |
-| GET | /api/keys | Session | List keys (with account + usage info) |
-| POST | /api/keys | Session | Create key (optional account_id) |
-| DELETE | /api/keys/:id | Session | Delete key |
-| PUT | /api/keys/:id/account | Session | Assign key to account |
-| DELETE | /api/keys/:id/account | Session | Unassign key from account |
+| POST | /api/auth/login | Password | Login → session cookie (admin or member) |
+| GET | /api/auth/check | Session | Check login state (returns role + username) |
+| GET | /api/keys | Session | List keys (members see only their own) |
+| POST | /api/keys | Session | Create key (members cannot bind account) |
+| DELETE | /api/keys/:id | Session | Delete key (members only own keys) |
+| PUT | /api/keys/:id/account | Admin | Assign key to account |
+| DELETE | /api/keys/:id/account | Admin | Unassign key from account |
 | GET | /api/credentials | Bearer API key | Download account-specific credentials |
-| GET | /api/accounts | Session | List accounts (proxy passwords masked) |
-| POST | /api/accounts | Session | Create account |
-| PUT | /api/accounts/:id | Session | Update account |
-| DELETE | /api/accounts/:id | Session | Delete account |
-| POST | /api/accounts/:id/test | Session | Test upstream proxy connectivity |
-| POST | /api/accounts/:id/credentials | Session | Upload credential files |
-| GET | /api/usage?month=YYYY-MM | Session | Usage statistics |
-| GET | /api/assignments | Session | View sticky session assignments |
+| GET | /api/accounts | Admin | List accounts (proxy passwords masked) |
+| POST | /api/accounts | Admin | Create account |
+| PUT | /api/accounts/:id | Admin | Update account |
+| DELETE | /api/accounts/:id | Admin | Delete account |
+| POST | /api/accounts/:id/test | Admin | Test upstream proxy connectivity |
+| POST | /api/accounts/:id/credentials | Admin | Upload credential files |
+| GET | /api/usage?month=YYYY-MM | Session | Usage statistics (members see own keys only) |
+| GET | /api/assignments | Admin | View sticky session assignments |
+| GET | /api/invite/:token | None | Validate invite link |
+| POST | /api/invite/:token/register | None | Member registration via invite |
+| GET | /api/invites | Admin | List invite links |
+| POST | /api/invites | Admin | Create invite link |
+| DELETE | /api/invites/:token | Admin | Revoke invite link |
+| GET | /api/members | Admin | List team members |
+| PUT | /api/members/:id | Admin | Update member (role/status) |
+| DELETE | /api/members/:id | Admin | Disable member |
 
 ### Data Storage
 
@@ -123,6 +131,8 @@ Client → Phantom Server (:8080) → Upstream Proxy A → api.claude.ai (Accoun
 ├── accounts.json         # [{id, name, status, credentials_dir, upstream_proxy, quota}]
 ├── usage.json            # {"YYYY-MM": {"key_id": {connections, bytes, cost}}}
 ├── assignments.json      # {"by_api_key": {...}, "by_client_ip": {...}}
+├── members.json          # [{id, username, password_hash, role, status, ...}]
+├── invites.json          # [{token, created_at, expires_at, max_uses, use_count, used_by}]
 └── accounts/
     └── acc_<id>/
         └── credentials/
@@ -131,13 +141,28 @@ Client → Phantom Server (:8080) → Upstream Proxy A → api.claude.ai (Accoun
             └── .claude/settings.json
 ```
 
+### Team Member Management
+
+Two roles: **Admin** (master password login) and **Member** (invite-based registration).
+
+- Admin creates invite links (`POST /api/invites`) with configurable expiry (default 7 days) and max uses
+- Members register via `/invite/<token>` URL, setting their own username + password
+- Members can only see/manage their own API keys and usage data
+- Admin has full access to all resources including accounts, assignments, and member management
+- Member passwords use the same scrypt hashing as master password
+- Session stores `role`, `member_id`, `username` for permission checks
+- API keys track `created_by_member` field for ownership filtering
+- Backward compatible: pre-existing sessions default to `role="admin"`
+
 ### Security
 
 - Master password: scrypt hashed (n=16384, r=8, p=1)
+- Member passwords: same scrypt hashing, stored in `members.json`
 - API keys: `sk-phantom-<32hex>`, only SHA-256 hash stored
 - Sessions: in-memory, HttpOnly + SameSite=Strict cookie, 24h TTL
 - Login rate limit: 5 failures / 5 minutes per IP
 - File writes: atomic (tmp + rename), 0600 permissions, threading.Lock
+- Invite tokens: `inv_<32hex>`, expire after 7 days by default
 
 ## Key Paths
 

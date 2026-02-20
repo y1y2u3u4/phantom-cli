@@ -840,14 +840,18 @@
       </div>
       <span class="header-title">Phantom API Keys</span>
     </div>
-    <button
-      class="theme-toggle"
-      id="themeToggle"
-      aria-label="Toggle color theme"
-      title="Toggle color theme"
-    >
-      <span id="themeIcon">&#9788;</span>
-    </button>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span id="headerUser" style="display:none;font-size:13px;color:var(--text-secondary);"></span>
+      <button class="btn btn-ghost btn-sm" id="logoutBtn" style="display:none;" onclick="logout()">Sign Out</button>
+      <button
+        class="theme-toggle"
+        id="themeToggle"
+        aria-label="Toggle color theme"
+        title="Toggle color theme"
+      >
+        <span id="themeIcon">&#9788;</span>
+      </button>
+    </div>
   </header>
 
   <!-- Main Content -->
@@ -945,8 +949,19 @@
             <div class="card">
               <h1 class="card-title">Sign In</h1>
               <p class="card-description">
-                Enter your master password to manage API keys.
+                Enter your credentials. Leave username empty to sign in as admin.
               </p>
+
+              <div class="form-group">
+                <label for="loginUsername">Username <span style="color:var(--text-secondary);font-weight:normal">(optional)</span></label>
+                <input
+                  type="text"
+                  id="loginUsername"
+                  name="loginUsername"
+                  autocomplete="username"
+                  placeholder="Leave empty for admin login"
+                />
+              </div>
 
               <div class="form-group">
                 <label for="loginPassword">Password</label>
@@ -987,8 +1002,55 @@
         </div>
       </div>
 
+      <!-- Invite State -->
+      <div id="inviteState" class="page-state">
+        <div class="auth-wrapper">
+          <div class="auth-card">
+            <div class="card">
+              <h1 class="card-title">Join Phantom</h1>
+              <p class="card-description">
+                You've been invited. Set up your account to get started.
+              </p>
+              <div class="form-group">
+                <label for="inviteUsername">Username</label>
+                <input type="text" id="inviteUsername" placeholder="3-30 chars, letters/numbers/underscore" autocomplete="username" />
+              </div>
+              <div class="form-group">
+                <label for="invitePassword">Password</label>
+                <div class="input-wrapper">
+                  <input type="password" id="invitePassword" placeholder="At least 8 characters" autocomplete="new-password" class="has-toggle" />
+                  <button class="toggle-visibility" type="button" aria-label="Show password" onclick="togglePasswordVisibility('invitePassword', this)">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                  </button>
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="inviteConfirm">Confirm Password</label>
+                <div class="input-wrapper">
+                  <input type="password" id="inviteConfirm" placeholder="Re-enter password" autocomplete="new-password" class="has-toggle" />
+                  <button class="toggle-visibility" type="button" aria-label="Show confirm password" onclick="togglePasswordVisibility('inviteConfirm', this)">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                  </button>
+                </div>
+              </div>
+              <div class="alert alert-error" id="inviteError" role="alert"></div>
+              <button class="btn btn-primary btn-full" id="inviteBtn" onclick="registerInvite()">Create Account</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Dashboard State -->
       <div id="dashboardState" class="page-state">
+
+        <!-- Tab Bar -->
+        <div id="tabBar" style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:24px;">
+          <button class="btn btn-ghost btn-sm tab-btn active" data-tab="keys" onclick="switchTab('keys')" style="border-radius:0;border-bottom:2px solid var(--accent);border-left:none;border-right:none;border-top:none;">API Keys</button>
+          <button class="btn btn-ghost btn-sm tab-btn admin-only" data-tab="members" onclick="switchTab('members')" style="border-radius:0;border-bottom:2px solid transparent;border-left:none;border-right:none;border-top:none;">Members</button>
+        </div>
+
+        <!-- Tab: Keys -->
+        <div id="tabKeys" class="tab-panel" style="display:block;">
 
         <!-- Create Key Section -->
         <div class="section">
@@ -1083,6 +1145,84 @@
           </div>
         </div>
 
+        </div>
+        <!-- end tabKeys -->
+
+        <!-- Tab: Members (Admin Only) -->
+        <div id="tabMembers" class="tab-panel" style="display:none;">
+
+          <!-- Invite Section -->
+          <div class="section">
+            <div class="card">
+              <div class="section-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                  <circle cx="8.5" cy="7" r="4"/>
+                  <line x1="20" y1="8" x2="20" y2="14"/>
+                  <line x1="23" y1="11" x2="17" y2="11"/>
+                </svg>
+                Invite Link
+              </div>
+              <div style="display:flex;gap:10px;align-items:center;">
+                <button class="btn btn-primary" id="createInviteBtn" onclick="createInvite()">Generate Invite Link</button>
+              </div>
+              <div class="new-key-banner" id="inviteBanner" role="status" aria-live="polite">
+                <div class="new-key-banner-title">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+                  Invite Link Created
+                </div>
+                <div class="key-display-row">
+                  <span class="key-value" id="inviteUrlValue"></span>
+                  <button class="copy-btn" id="copyInviteBtn" onclick="copyInviteUrl()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    Copy
+                  </button>
+                </div>
+                <div class="new-key-warning">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                  Share this link with your team member. It expires in 7 days and can be used once.
+                </div>
+                <button class="btn btn-ghost btn-sm" onclick="document.getElementById('inviteBanner').classList.remove('visible')">Done</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Members List -->
+          <div class="section">
+            <div class="card" style="padding: 0; overflow: hidden;">
+              <div style="padding: 20px 20px 16px; border-bottom: 1px solid var(--border);">
+                <div class="section-title" style="margin-bottom: 0;">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                    <circle cx="9" cy="7" r="4"/>
+                    <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                    <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                  </svg>
+                  Team Members
+                </div>
+              </div>
+              <div class="keys-table-wrapper">
+                <table class="keys-table" aria-label="Team members list">
+                  <thead>
+                    <tr>
+                      <th scope="col">Username</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">Keys</th>
+                      <th scope="col">Last Login</th>
+                      <th scope="col" style="text-align: right;">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="membersTableBody">
+                    <!-- Rows injected by JS -->
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+        </div>
+        <!-- end tabMembers -->
+
       </div>
       <!-- end dashboardState -->
 
@@ -1147,7 +1287,11 @@
   /* ===================================================
      Page State Management
   =================================================== */
-  var states = ['initLoading', 'setupState', 'loginState', 'dashboardState'];
+  var states = ['initLoading', 'setupState', 'loginState', 'inviteState', 'dashboardState'];
+  var currentRole = null;
+  var currentUsername = null;
+  var inviteToken = null;
+  var currentInviteUrl = null;
 
   function showState(name) {
     states.forEach(function (id) {
@@ -1324,6 +1468,7 @@
      Login
   =================================================== */
   window.login = async function () {
+    var username = document.getElementById('loginUsername').value.trim();
     var password = document.getElementById('loginPassword').value;
     hideAlert('loginError');
 
@@ -1332,11 +1477,15 @@
       return;
     }
 
+    var loginBody = { password: password };
+    if (username) loginBody.username = username;
+
     setButtonLoading('loginBtn', true, 'Signing in...');
     try {
-      await api('POST', '/api/auth/login', { password: password });
+      await api('POST', '/api/auth/login', loginBody);
       document.getElementById('loginPassword').value = '';
-      await loadDashboard();
+      document.getElementById('loginUsername').value = '';
+      await checkAuthAndLoadDashboard();
     } catch (e) {
       if (e.status === 401) {
         showAlert('loginError', 'Incorrect password. Please try again.');
@@ -1350,6 +1499,9 @@
     }
   };
 
+  document.getElementById('loginUsername').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { document.getElementById('loginPassword').focus(); }
+  });
   document.getElementById('loginPassword').addEventListener('keydown', function (e) {
     if (e.key === 'Enter') { window.login(); }
   });
@@ -1685,10 +1837,197 @@
   };
 
   /* ===================================================
+     Tab Switching
+  =================================================== */
+  window.switchTab = function (name) {
+    document.querySelectorAll('.tab-btn').forEach(function(t) {
+      t.classList.remove('active');
+      t.style.borderBottomColor = 'transparent';
+    });
+    document.querySelectorAll('.tab-panel').forEach(function(p) { p.style.display = 'none'; });
+
+    var tab = document.querySelector('.tab-btn[data-tab="' + name + '"]');
+    if (tab) { tab.classList.add('active'); tab.style.borderBottomColor = 'var(--accent)'; }
+    var panel = document.getElementById('tab' + name.charAt(0).toUpperCase() + name.slice(1));
+    if (panel) panel.style.display = 'block';
+
+    if (name === 'members') loadMembers();
+  };
+
+  /* ===================================================
+     Logout
+  =================================================== */
+  window.logout = async function () {
+    try { await api('POST', '/api/auth/logout'); } catch(e) {}
+    currentRole = null;
+    currentUsername = null;
+    document.getElementById('headerUser').style.display = 'none';
+    document.getElementById('logoutBtn').style.display = 'none';
+    showState('loginState');
+    document.getElementById('loginUsername').focus();
+  };
+
+  /* ===================================================
+     Invite Registration
+  =================================================== */
+  window.registerInvite = async function () {
+    var username = document.getElementById('inviteUsername').value.trim();
+    var password = document.getElementById('invitePassword').value;
+    var confirm  = document.getElementById('inviteConfirm').value;
+    hideAlert('inviteError');
+
+    if (!username || username.length < 3) {
+      showAlert('inviteError', 'Username must be at least 3 characters.');
+      return;
+    }
+    if (!/^[a-zA-Z0-9_]+$/.test(username)) {
+      showAlert('inviteError', 'Username can only contain letters, numbers, and underscores.');
+      return;
+    }
+    if (password.length < 8) {
+      showAlert('inviteError', 'Password must be at least 8 characters.');
+      return;
+    }
+    if (password !== confirm) {
+      showAlert('inviteError', 'Passwords do not match.');
+      return;
+    }
+
+    setButtonLoading('inviteBtn', true, 'Creating account...');
+    try {
+      await api('POST', '/api/invite/' + encodeURIComponent(inviteToken) + '/register', {
+        username: username,
+        password: password,
+      });
+      // Auto-logged in via cookie; redirect to dashboard
+      window.history.replaceState({}, '', '/');
+      await checkAuthAndLoadDashboard();
+    } catch (e) {
+      showAlert('inviteError', e.message || 'Registration failed.');
+    } finally {
+      setButtonLoading('inviteBtn', false, 'Create Account');
+    }
+  };
+
+  /* ===================================================
+     Load Members (Admin)
+  =================================================== */
+  async function loadMembers() {
+    var body = document.getElementById('membersTableBody');
+    body.innerHTML = '<tr><td colspan="5"><div class="init-loading" style="padding:20px"><div class="spinner spinner-dark"></div></div></td></tr>';
+    try {
+      var result = await api('GET', '/api/members');
+      renderMembers(result.members || []);
+    } catch (e) {
+      body.innerHTML = '<tr><td colspan="5"><div class="empty-state"><p style="color:var(--danger)">' + escapeHtml(e.message) + '</p></div></td></tr>';
+    }
+  }
+
+  function renderMembers(members) {
+    var body = document.getElementById('membersTableBody');
+    if (!members || members.length === 0) {
+      body.innerHTML = '<tr><td colspan="5"><div class="empty-state"><p>No team members yet. Generate an invite link above.</p></div></td></tr>';
+      return;
+    }
+    var html = '';
+    members.forEach(function (m) {
+      var lastLogin = m.last_login_at ? formatDate(m.last_login_at) : 'Never';
+      var statusColor = m.status === 'active' ? 'var(--success)' : 'var(--danger)';
+      var statusLabel = m.status === 'active' ? 'Active' : 'Disabled';
+      var actionBtn = m.status === 'active'
+        ? '<button class="btn btn-danger btn-sm" onclick="disableMember(\'' + escapeHtml(m.id) + '\', \'' + escapeHtml(m.username) + '\')">Disable</button>'
+        : '<button class="btn btn-ghost btn-sm" onclick="enableMember(\'' + escapeHtml(m.id) + '\')">Enable</button>';
+
+      html += [
+        '<tr>',
+        '  <td><span class="key-name" style="font-weight:600">' + escapeHtml(m.username) + '</span></td>',
+        '  <td><span style="color:' + statusColor + ';font-size:12px;font-weight:500">' + statusLabel + '</span></td>',
+        '  <td>' + (m.key_count || 0) + '</td>',
+        '  <td><span class="key-time">' + escapeHtml(lastLogin) + '</span></td>',
+        '  <td class="actions-cell">' + actionBtn + '</td>',
+        '</tr>'
+      ].join('');
+    });
+    body.innerHTML = html;
+  }
+
+  window.disableMember = async function (id, name) {
+    if (!confirm('Disable member "' + name + '"? They will not be able to log in.')) return;
+    try {
+      await api('DELETE', '/api/members/' + encodeURIComponent(id));
+      await loadMembers();
+    } catch (e) {
+      alert('Failed: ' + e.message);
+    }
+  };
+
+  window.enableMember = async function (id) {
+    try {
+      await api('PUT', '/api/members/' + encodeURIComponent(id), { status: 'active' });
+      await loadMembers();
+    } catch (e) {
+      alert('Failed: ' + e.message);
+    }
+  };
+
+  /* ===================================================
+     Create Invite
+  =================================================== */
+  window.createInvite = async function () {
+    setButtonLoading('createInviteBtn', true, 'Generating...');
+    try {
+      var result = await api('POST', '/api/invites', {});
+      currentInviteUrl = result.invite_url;
+      document.getElementById('inviteUrlValue').textContent = result.invite_url;
+      document.getElementById('inviteBanner').classList.add('visible');
+      document.getElementById('copyInviteBtn').classList.remove('copied');
+      document.getElementById('copyInviteBtn').innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy';
+    } catch (e) {
+      alert('Failed: ' + e.message);
+    } finally {
+      setButtonLoading('createInviteBtn', false, 'Generate Invite Link');
+    }
+  };
+
+  window.copyInviteUrl = function () {
+    if (!currentInviteUrl) return;
+    copyToClipboard(currentInviteUrl, 'copyInviteBtn');
+  };
+
+  /* ===================================================
      Load Dashboard
   =================================================== */
+  async function checkAuthAndLoadDashboard() {
+    try {
+      var result = await api('GET', '/api/auth/check');
+      if (!result.authenticated) {
+        showState('loginState');
+        return;
+      }
+      currentRole = result.role || 'admin';
+      currentUsername = result.username || null;
+    } catch(e) {
+      showState('loginState');
+      return;
+    }
+    await loadDashboard();
+  }
+
   async function loadDashboard() {
     showState('dashboardState');
+
+    // Show user info in header
+    document.getElementById('headerUser').textContent = currentUsername || 'Admin';
+    document.getElementById('headerUser').style.display = '';
+    document.getElementById('logoutBtn').style.display = '';
+
+    // Hide admin-only elements for members
+    document.querySelectorAll('.admin-only').forEach(function(el) {
+      el.style.display = (currentRole === 'admin') ? '' : 'none';
+    });
+
+    // Reset to keys tab
+    switchTab('keys');
     await loadKeys();
   }
 
@@ -1697,6 +2036,32 @@
   =================================================== */
   async function init() {
     showState('initLoading');
+
+    // Check for invite URL: /invite/<token>
+    var pathMatch = window.location.pathname.match(/^\/invite\/(.+)$/);
+    if (pathMatch) {
+      inviteToken = decodeURIComponent(pathMatch[1]);
+      try {
+        var check = await api('GET', '/api/invite/' + encodeURIComponent(inviteToken));
+        if (check.valid) {
+          showState('inviteState');
+          document.getElementById('inviteUsername').focus();
+          return;
+        } else {
+          showState('inviteState');
+          showAlert('inviteError', check.error || 'This invite link is invalid or has expired.');
+          document.getElementById('inviteBtn').disabled = true;
+          return;
+        }
+      } catch (e) {
+        showState('inviteState');
+        showAlert('inviteError', 'This invite link is invalid or has expired.');
+        document.getElementById('inviteBtn').disabled = true;
+        return;
+      }
+    }
+
+    // Normal auth check
     try {
       var result = await api('GET', '/api/auth/check');
       if (result.needs_setup) {
@@ -1704,12 +2069,13 @@
         document.getElementById('setupPassword').focus();
       } else if (!result.authenticated) {
         showState('loginState');
-        document.getElementById('loginPassword').focus();
+        document.getElementById('loginUsername').focus();
       } else {
+        currentRole = result.role || 'admin';
+        currentUsername = result.username || null;
         await loadDashboard();
       }
     } catch (e) {
-      // If we can't reach the API, show a helpful error over the init screen
       var el = document.getElementById('initLoading');
       el.innerHTML = [
         '<div class="init-loading">',

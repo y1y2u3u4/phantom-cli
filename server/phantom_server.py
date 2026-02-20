@@ -67,6 +67,8 @@ API_KEYS_FILE = os.path.join(DATA_DIR, "api_keys.json")
 ACCOUNTS_FILE = os.path.join(DATA_DIR, "accounts.json")
 USAGE_FILE = os.path.join(DATA_DIR, "usage.json")
 ASSIGNMENTS_FILE = os.path.join(DATA_DIR, "assignments.json")
+MEMBERS_FILE = os.path.join(DATA_DIR, "members.json")
+INVITES_FILE = os.path.join(DATA_DIR, "invites.json")
 ACCOUNTS_DIR = os.path.join(DATA_DIR, "accounts")
 
 BUFFER_SIZE = 65536
@@ -247,6 +249,26 @@ def save_assignments(assignments: dict) -> None:
         _write_json_file(ASSIGNMENTS_FILE, assignments)
 
 
+# ── Members & invites data management ────────────────────────────────────────
+
+def load_members() -> list:
+    return _read_json_file(MEMBERS_FILE, [])
+
+
+def save_members(members: list) -> None:
+    with _file_lock:
+        _write_json_file(MEMBERS_FILE, members)
+
+
+def load_invites() -> list:
+    return _read_json_file(INVITES_FILE, [])
+
+
+def save_invites(invites: list) -> None:
+    with _file_lock:
+        _write_json_file(INVITES_FILE, invites)
+
+
 # ── Utility: password hashing (scrypt) ───────────────────────────────────────
 
 def hash_password(password: str) -> str:
@@ -297,10 +319,16 @@ def mask_key(prefix: str, suffix: str) -> str:
 
 # ── Utility: session management ───────────────────────────────────────────────
 
-def create_session() -> str:
+def create_session(role: str = "admin", member_id: str | None = None,
+                    username: str | None = None) -> str:
     session_id = secrets.token_hex(16)
     with _sessions_lock:
-        _sessions[session_id] = {"created_at": time.time()}
+        _sessions[session_id] = {
+            "created_at": time.time(),
+            "role": role,
+            "member_id": member_id,
+            "username": username,
+        }
     return session_id
 
 
@@ -313,6 +341,20 @@ def validate_session(session_id: str) -> bool:
             del _sessions[session_id]
             return False
         return True
+
+
+def get_session_info(session_id: str) -> dict | None:
+    """Return full session dict or None if not authenticated/expired."""
+    if not session_id:
+        return None
+    with _sessions_lock:
+        session = _sessions.get(session_id)
+        if session is None:
+            return None
+        if time.time() - session["created_at"] > SESSION_TTL:
+            del _sessions[session_id]
+            return None
+        return dict(session)
 
 
 def delete_session(session_id: str) -> None:
@@ -1493,6 +1535,16 @@ def migrate_v1_to_v2() -> None:
     log(f"Migration complete: created default account {account_id} with {copied} credential files")
 
 
+def migrate_add_members() -> None:
+    """Ensure members.json and invites.json exist. No-op if already present."""
+    if not os.path.exists(MEMBERS_FILE):
+        _write_json_file(MEMBERS_FILE, [])
+        log("Created members.json (team members feature enabled)")
+    if not os.path.exists(INVITES_FILE):
+        _write_json_file(INVITES_FILE, [])
+        log("Created invites.json (team invite links feature enabled)")
+
+
 # ── CONNECT proxy tunnel ──────────────────────────────────────────────────────
 
 def _forward(
@@ -1740,6 +1792,30 @@ class PhantomHandler(BaseHTTPRequestHandler):
             return False
         return validate_session(sid)
 
+    def _get_session_info(self) -> dict | None:
+        """Return full session dict or None if not authenticated."""
+        sid = self._get_session_id()
+        return get_session_info(sid)
+
+    def _require_auth(self) -> dict | None:
+        """Returns session dict or sends 401 and returns None."""
+        session = self._get_session_info()
+        if not session:
+            self._send_json(401, {"error": "Unauthorized"})
+            return None
+        return session
+
+    def _require_admin(self) -> dict | None:
+        """Returns session dict (admin only) or sends 401/403 and returns None."""
+        session = self._get_session_info()
+        if not session:
+            self._send_json(401, {"error": "Unauthorized"})
+            return None
+        if session.get("role", "admin") != "admin":
+            self._send_json(403, {"error": "Admin access required"})
+            return None
+        return session
+
     def _get_bearer_token(self) -> str | None:
         auth = self.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
@@ -1903,6 +1979,20 @@ class PhantomHandler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/api/auth/logout":
             return self._handle_auth_logout()
 
+        # ── Invite endpoints (public) ────────────────────────────────────
+
+        if method == "GET" and path.startswith("/api/invite/"):
+            token = path[len("/api/invite/"):]
+            return self._handle_invite_check(token)
+
+        if method == "POST" and path.startswith("/api/invite/") and path.endswith("/register"):
+            token = path[len("/api/invite/"):-len("/register")]
+            return self._handle_invite_register(token)
+
+        # Serve SPA for /invite/<token> page (JS handles routing)
+        if method == "GET" and path.startswith("/invite/"):
+            return self._handle_ui()
+
         # ── Credential download (Bearer API key auth) ─────────────────────
 
         if method == "GET" and path == "/api/credentials":
@@ -1976,6 +2066,31 @@ class PhantomHandler(BaseHTTPRequestHandler):
 
         if method == "GET" and path == "/api/assignments":
             return self._handle_assignments_list()
+
+        # ── Member management (admin only) ───────────────────────────────
+
+        if method == "GET" and path == "/api/members":
+            return self._handle_members_list()
+
+        if method == "PUT" and path.startswith("/api/members/"):
+            member_id = path[len("/api/members/"):]
+            return self._handle_members_update(member_id)
+
+        if method == "DELETE" and path.startswith("/api/members/"):
+            member_id = path[len("/api/members/"):]
+            return self._handle_members_delete(member_id)
+
+        # ── Invite management (admin only) ───────────────────────────────
+
+        if method == "GET" and path == "/api/invites":
+            return self._handle_invites_list()
+
+        if method == "POST" and path == "/api/invites":
+            return self._handle_invites_create()
+
+        if method == "DELETE" and path.startswith("/api/invites/"):
+            token = path[len("/api/invites/"):]
+            return self._handle_invites_delete(token)
 
         # ── Static files (Next.js export) ────────────────────────────────
 
@@ -2059,24 +2174,54 @@ class PhantomHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "Invalid JSON body"})
             return
 
+        username = body.get("username", "").strip()
         password = body.get("password", "")
-        cfg = load_server_config()
-        stored_hash = cfg.get("master_password_hash", "")
 
-        if not stored_hash:
-            self._send_json(403, {"error": "Server not configured. Set master password first."})
-            return
+        if username:
+            # ── Member login ──
+            members = load_members()
+            member = None
+            for m in members:
+                if m["username"].lower() == username.lower() and m.get("status") == "active":
+                    member = m
+                    break
 
-        if not verify_password(password, stored_hash):
-            record_failed_login(ip)
-            log(f"Failed login from {ip}")
-            self._send_json(401, {"error": "Invalid password"})
-            return
+            if not member or not verify_password(password, member["password_hash"]):
+                record_failed_login(ip)
+                log(f"Failed member login: {username} from {ip}")
+                self._send_json(401, {"error": "Invalid credentials"})
+                return
 
-        clear_failed_logins(ip)
-        _purge_expired_sessions()
-        session_id = create_session()
-        log(f"Successful login from {ip}")
+            # Update last login info
+            member["last_login_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            member["last_login_ip"] = ip
+            save_members(members)
+
+            clear_failed_logins(ip)
+            _purge_expired_sessions()
+            session_id = create_session(role=member.get("role", "member"),
+                                        member_id=member["id"],
+                                        username=member["username"])
+            log(f"Member login: {member['username']} from {ip}")
+        else:
+            # ── Admin login (master password) ──
+            cfg = load_server_config()
+            stored_hash = cfg.get("master_password_hash", "")
+
+            if not stored_hash:
+                self._send_json(403, {"error": "Server not configured. Set master password first."})
+                return
+
+            if not verify_password(password, stored_hash):
+                record_failed_login(ip)
+                log(f"Failed admin login from {ip}")
+                self._send_json(401, {"error": "Invalid password"})
+                return
+
+            clear_failed_logins(ip)
+            _purge_expired_sessions()
+            session_id = create_session(role="admin")
+            log(f"Admin login from {ip}")
 
         payload = json.dumps({"message": "Logged in successfully"}).encode("utf-8")
         self.send_response(200)
@@ -2093,8 +2238,14 @@ class PhantomHandler(BaseHTTPRequestHandler):
     def _handle_auth_check(self) -> None:
         config = load_server_config()
         needs_setup = "master_password_hash" not in config
-        if self._is_authenticated():
-            self._send_json(200, {"authenticated": True, "needs_setup": False})
+        session = self._get_session_info()
+        if session:
+            self._send_json(200, {
+                "authenticated": True,
+                "needs_setup": False,
+                "role": session.get("role", "admin"),
+                "username": session.get("username"),
+            })
         else:
             self._send_json(200, {"authenticated": False, "needs_setup": needs_setup})
 
@@ -2115,11 +2266,17 @@ class PhantomHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def _handle_keys_list(self) -> None:
-        if not self._is_authenticated():
-            self._send_json(401, {"error": "Unauthorized"})
+        session = self._require_auth()
+        if not session:
             return
 
         keys = load_api_keys()
+
+        # Members only see their own keys
+        if session.get("role", "admin") != "admin":
+            member_id = session.get("member_id")
+            keys = [k for k in keys if k.get("created_by_member") == member_id]
+
         accounts = load_accounts()
         accounts_map = {a["id"]: a for a in accounts}
 
@@ -2153,8 +2310,8 @@ class PhantomHandler(BaseHTTPRequestHandler):
         self._send_json(200, {"keys": masked})
 
     def _handle_keys_create(self) -> None:
-        if not self._is_authenticated():
-            self._send_json(401, {"error": "Unauthorized"})
+        session = self._require_auth()
+        if not session:
             return
 
         body = self._parse_json_body()
@@ -2174,7 +2331,9 @@ class PhantomHandler(BaseHTTPRequestHandler):
         key_id = secrets.token_hex(8)
         created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-        account_id = body.get("account_id")  # optional: bind key to account
+        # Members cannot bind keys to accounts
+        is_admin = session.get("role", "admin") == "admin"
+        account_id = body.get("account_id") if is_admin else None
 
         new_key_record = {
             "id": key_id,
@@ -2186,12 +2345,13 @@ class PhantomHandler(BaseHTTPRequestHandler):
             "created_at": created_at,
             "last_used_at": None,
             "last_used_ip": None,
+            "created_by_member": session.get("member_id"),  # None for admin
         }
 
         keys = load_api_keys()
         keys.append(new_key_record)
         save_api_keys(keys)
-        log(f"API key created: id={key_id} name={name!r}")
+        log(f"API key created: id={key_id} name={name!r} by={session.get('username', 'admin')}")
 
         self._send_json(201, {
             "id": key_id,
@@ -2201,8 +2361,8 @@ class PhantomHandler(BaseHTTPRequestHandler):
         })
 
     def _handle_keys_delete(self, key_id: str) -> None:
-        if not self._is_authenticated():
-            self._send_json(401, {"error": "Unauthorized"})
+        session = self._require_auth()
+        if not session:
             return
 
         if not key_id:
@@ -2210,14 +2370,25 @@ class PhantomHandler(BaseHTTPRequestHandler):
             return
 
         keys = load_api_keys()
-        new_keys = [k for k in keys if k["id"] != key_id]
+        target = None
+        for k in keys:
+            if k["id"] == key_id:
+                target = k
+                break
 
-        if len(new_keys) == len(keys):
+        if not target:
             self._send_json(404, {"error": "Key not found"})
             return
 
+        # Members can only delete their own keys
+        if session.get("role", "admin") != "admin":
+            if target.get("created_by_member") != session.get("member_id"):
+                self._send_json(403, {"error": "Cannot delete keys created by others"})
+                return
+
+        new_keys = [k for k in keys if k["id"] != key_id]
         save_api_keys(new_keys)
-        log(f"API key deleted: id={key_id}")
+        log(f"API key deleted: id={key_id} by={session.get('username', 'admin')}")
         self._send_json(200, {"message": "Key deleted"})
 
     def _handle_credentials(self) -> None:
@@ -2282,8 +2453,7 @@ class PhantomHandler(BaseHTTPRequestHandler):
     # ── Account management handlers ─────────────────────────────────────
 
     def _handle_accounts_list(self) -> None:
-        if not self._is_authenticated():
-            self._send_json(401, {"error": "Unauthorized"})
+        if not self._require_admin():
             return
 
         accounts = load_accounts()
@@ -2337,8 +2507,7 @@ class PhantomHandler(BaseHTTPRequestHandler):
         self._send_json(200, {"accounts": result})
 
     def _handle_accounts_create(self) -> None:
-        if not self._is_authenticated():
-            self._send_json(401, {"error": "Unauthorized"})
+        if not self._require_admin():
             return
 
         body = self._parse_json_body()
@@ -2386,8 +2555,7 @@ class PhantomHandler(BaseHTTPRequestHandler):
         self._send_json(201, {"id": account_id, "name": name, "credentials_dir": cred_dir})
 
     def _handle_accounts_update(self, acc_id: str) -> None:
-        if not self._is_authenticated():
-            self._send_json(401, {"error": "Unauthorized"})
+        if not self._require_admin():
             return
 
         body = self._parse_json_body()
@@ -2435,8 +2603,7 @@ class PhantomHandler(BaseHTTPRequestHandler):
 
     def _handle_account_quota(self, acc_id: str) -> None:
         """Return real Anthropic quota data for an account."""
-        if not self._is_authenticated():
-            self._send_json(401, {"error": "Unauthorized"})
+        if not self._require_admin():
             return
 
         accounts = load_accounts()
@@ -2455,8 +2622,7 @@ class PhantomHandler(BaseHTTPRequestHandler):
 
     def _handle_usage_refresh(self) -> None:
         """Manually trigger usage query for all accounts."""
-        if not self._is_authenticated():
-            self._send_json(401, {"error": "Unauthorized"})
+        if not self._require_admin():
             return
 
         # Run query in background thread to not block the HTTP response
@@ -2469,8 +2635,7 @@ class PhantomHandler(BaseHTTPRequestHandler):
         self._send_json(200, {"status": "querying", "message": "Usage query started in background"})
 
     def _handle_accounts_delete(self, acc_id: str) -> None:
-        if not self._is_authenticated():
-            self._send_json(401, {"error": "Unauthorized"})
+        if not self._require_admin():
             return
 
         accounts = load_accounts()
@@ -2510,8 +2675,7 @@ class PhantomHandler(BaseHTTPRequestHandler):
 
     def _handle_accounts_test(self, acc_id: str) -> None:
         """Test upstream proxy connectivity for an account."""
-        if not self._is_authenticated():
-            self._send_json(401, {"error": "Unauthorized"})
+        if not self._require_admin():
             return
 
         accounts = load_accounts()
@@ -2572,8 +2736,7 @@ class PhantomHandler(BaseHTTPRequestHandler):
 
     def _handle_accounts_upload_credentials(self, acc_id: str) -> None:
         """Upload credential files for an account."""
-        if not self._is_authenticated():
-            self._send_json(401, {"error": "Unauthorized"})
+        if not self._require_admin():
             return
 
         accounts = load_accounts()
@@ -2615,8 +2778,7 @@ class PhantomHandler(BaseHTTPRequestHandler):
     # ── Key ↔ Account assignment handlers ─────────────────────────────────
 
     def _handle_key_assign_account(self, key_id: str) -> None:
-        if not self._is_authenticated():
-            self._send_json(401, {"error": "Unauthorized"})
+        if not self._require_admin():
             return
 
         body = self._parse_json_body()
@@ -2659,8 +2821,7 @@ class PhantomHandler(BaseHTTPRequestHandler):
         self._send_json(200, {"message": "Key assigned to account"})
 
     def _handle_key_unassign_account(self, key_id: str) -> None:
-        if not self._is_authenticated():
-            self._send_json(401, {"error": "Unauthorized"})
+        if not self._require_admin():
             return
 
         keys = load_api_keys()
@@ -2688,8 +2849,8 @@ class PhantomHandler(BaseHTTPRequestHandler):
     # ── Usage handler ─────────────────────────────────────────────────────
 
     def _handle_usage(self) -> None:
-        if not self._is_authenticated():
-            self._send_json(401, {"error": "Unauthorized"})
+        session = self._require_auth()
+        if not session:
             return
 
         # Flush pending usage data first
@@ -2702,6 +2863,13 @@ class PhantomHandler(BaseHTTPRequestHandler):
 
         usage = load_usage()
         month_data = usage.get(month, {})
+
+        # Members only see usage from their own keys
+        if session.get("role", "admin") != "admin":
+            member_id = session.get("member_id")
+            all_keys = load_api_keys()
+            my_key_ids = {k["id"] for k in all_keys if k.get("created_by_member") == member_id}
+            month_data = {kid: v for kid, v in month_data.items() if kid in my_key_ids}
 
         # Build per-account summary
         accounts = load_accounts()
@@ -2736,12 +2904,305 @@ class PhantomHandler(BaseHTTPRequestHandler):
     # ── Assignments handler ───────────────────────────────────────────────
 
     def _handle_assignments_list(self) -> None:
-        if not self._is_authenticated():
-            self._send_json(401, {"error": "Unauthorized"})
+        if not self._require_admin():
             return
 
         assignments = load_assignments()
         self._send_json(200, assignments)
+
+    # ── Invite handlers ────────────────────────────────────────────────────
+
+    def _handle_invites_create(self) -> None:
+        if not self._require_admin():
+            return
+
+        body = self._parse_json_body() or {}
+        max_uses = body.get("max_uses", 1)
+        expires_hours = body.get("expires_hours", 168)  # 7 days default
+
+        token = "inv_" + secrets.token_hex(16)
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        expires_at = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+            time.gmtime(time.time() + expires_hours * 3600)
+        )
+
+        invite = {
+            "token": token,
+            "created_at": now,
+            "expires_at": expires_at,
+            "max_uses": max_uses,
+            "use_count": 0,
+            "used_by": [],
+        }
+
+        invites = load_invites()
+        invites.append(invite)
+        save_invites(invites)
+        log(f"Invite created: {token[:20]}... expires={expires_at} max_uses={max_uses}")
+
+        # Build invite URL from Host header
+        host = self.headers.get("Host", "localhost:8080")
+        scheme = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
+        invite_url = f"{scheme}://{host}/invite/{token}"
+
+        self._send_json(201, {
+            "token": token,
+            "invite_url": invite_url,
+            "expires_at": expires_at,
+            "max_uses": max_uses,
+        })
+
+    def _handle_invites_list(self) -> None:
+        if not self._require_admin():
+            return
+
+        invites = load_invites()
+        # Filter out sensitive data, add status
+        result = []
+        now = time.time()
+        for inv in invites:
+            expires_at = inv.get("expires_at", "")
+            try:
+                exp_ts = time.mktime(time.strptime(expires_at, "%Y-%m-%dT%H:%M:%SZ")) - time.timezone
+            except (ValueError, OverflowError):
+                exp_ts = 0
+            expired = now > exp_ts
+            exhausted = inv.get("max_uses", 1) > 0 and inv.get("use_count", 0) >= inv.get("max_uses", 1)
+
+            result.append({
+                "token": inv["token"],
+                "created_at": inv.get("created_at"),
+                "expires_at": expires_at,
+                "max_uses": inv.get("max_uses", 1),
+                "use_count": inv.get("use_count", 0),
+                "status": "expired" if expired else ("exhausted" if exhausted else "active"),
+            })
+
+        self._send_json(200, {"invites": result})
+
+    def _handle_invites_delete(self, token: str) -> None:
+        if not self._require_admin():
+            return
+
+        invites = load_invites()
+        new_invites = [i for i in invites if i["token"] != token]
+        if len(new_invites) == len(invites):
+            self._send_json(404, {"error": "Invite not found"})
+            return
+
+        save_invites(new_invites)
+        log(f"Invite revoked: {token[:20]}...")
+        self._send_json(200, {"message": "Invite revoked"})
+
+    def _handle_invite_check(self, token: str) -> None:
+        """Public endpoint: check if an invite token is valid."""
+        invites = load_invites()
+        now = time.time()
+        for inv in invites:
+            if inv["token"] != token:
+                continue
+            # Check expiry
+            try:
+                exp_ts = time.mktime(time.strptime(inv["expires_at"], "%Y-%m-%dT%H:%M:%SZ")) - time.timezone
+            except (ValueError, OverflowError):
+                exp_ts = 0
+            if now > exp_ts:
+                self._send_json(200, {"valid": False, "error": "Invite link has expired"})
+                return
+            # Check usage limit
+            if inv.get("max_uses", 1) > 0 and inv.get("use_count", 0) >= inv.get("max_uses", 1):
+                self._send_json(200, {"valid": False, "error": "Invite link has been fully used"})
+                return
+            self._send_json(200, {"valid": True})
+            return
+
+        self._send_json(200, {"valid": False, "error": "Invalid invite link"})
+
+    def _handle_invite_register(self, token: str) -> None:
+        """Public endpoint: register a new member via invite token."""
+        ip = self._client_ip()
+
+        if not check_rate_limit(ip):
+            self._send_json(429, {"error": "Too many attempts. Try again later."})
+            return
+
+        body = self._parse_json_body()
+        if not body:
+            self._send_json(400, {"error": "Invalid JSON body"})
+            return
+
+        username = body.get("username", "").strip()
+        password = body.get("password", "")
+
+        # Validate username
+        if not username or len(username) < 3 or len(username) > 30:
+            self._send_json(400, {"error": "Username must be 3-30 characters"})
+            return
+        if not re.match(r'^[a-zA-Z0-9_]+$', username):
+            self._send_json(400, {"error": "Username can only contain letters, numbers, and underscores"})
+            return
+
+        # Validate password
+        if len(password) < 8:
+            self._send_json(400, {"error": "Password must be at least 8 characters"})
+            return
+
+        # Validate invite token
+        invites = load_invites()
+        invite = None
+        now = time.time()
+        for inv in invites:
+            if inv["token"] == token:
+                invite = inv
+                break
+
+        if not invite:
+            record_failed_login(ip)
+            self._send_json(404, {"error": "Invalid invite link"})
+            return
+
+        # Check expiry
+        try:
+            exp_ts = time.mktime(time.strptime(invite["expires_at"], "%Y-%m-%dT%H:%M:%SZ")) - time.timezone
+        except (ValueError, OverflowError):
+            exp_ts = 0
+        if now > exp_ts:
+            self._send_json(400, {"error": "Invite link has expired"})
+            return
+
+        # Check usage limit
+        if invite.get("max_uses", 1) > 0 and invite.get("use_count", 0) >= invite.get("max_uses", 1):
+            self._send_json(400, {"error": "Invite link has been fully used"})
+            return
+
+        # Check username uniqueness
+        members = load_members()
+        for m in members:
+            if m["username"].lower() == username.lower():
+                self._send_json(409, {"error": "Username already taken"})
+                return
+
+        # Create member
+        member_id = "mbr_" + secrets.token_hex(8)
+        now_str = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        new_member = {
+            "id": member_id,
+            "username": username,
+            "password_hash": hash_password(password),
+            "role": "member",
+            "status": "active",
+            "created_at": now_str,
+            "created_by": "invite:" + token[:20],
+            "last_login_at": now_str,
+            "last_login_ip": ip,
+        }
+        members.append(new_member)
+        save_members(members)
+
+        # Update invite usage
+        invite["use_count"] = invite.get("use_count", 0) + 1
+        invite["used_by"] = invite.get("used_by", []) + [member_id]
+        save_invites(invites)
+
+        log(f"Member registered: {username} (id={member_id}) via invite {token[:20]}...")
+
+        # Auto-login: create session + set cookie
+        clear_failed_logins(ip)
+        _purge_expired_sessions()
+        session_id = create_session(role="member", member_id=member_id, username=username)
+
+        payload = json.dumps({"message": "Account created successfully", "username": username}).encode("utf-8")
+        self.send_response(201)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header(
+            "Set-Cookie",
+            f"phantom_session={session_id}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL}"
+        )
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(payload)
+
+    # ── Member management handlers ─────────────────────────────────────────
+
+    def _handle_members_list(self) -> None:
+        if not self._require_admin():
+            return
+
+        members = load_members()
+        keys = load_api_keys()
+
+        # Count keys per member
+        key_counts: dict = {}
+        for k in keys:
+            mid = k.get("created_by_member")
+            if mid:
+                key_counts[mid] = key_counts.get(mid, 0) + 1
+
+        result = []
+        for m in members:
+            result.append({
+                "id": m["id"],
+                "username": m["username"],
+                "role": m.get("role", "member"),
+                "status": m.get("status", "active"),
+                "created_at": m.get("created_at"),
+                "last_login_at": m.get("last_login_at"),
+                "last_login_ip": m.get("last_login_ip"),
+                "key_count": key_counts.get(m["id"], 0),
+            })
+
+        self._send_json(200, {"members": result})
+
+    def _handle_members_update(self, member_id: str) -> None:
+        if not self._require_admin():
+            return
+
+        body = self._parse_json_body()
+        if not body:
+            self._send_json(400, {"error": "Invalid JSON body"})
+            return
+
+        members = load_members()
+        target = None
+        for m in members:
+            if m["id"] == member_id:
+                target = m
+                break
+
+        if not target:
+            self._send_json(404, {"error": "Member not found"})
+            return
+
+        if "status" in body and body["status"] in ("active", "disabled"):
+            target["status"] = body["status"]
+        if "role" in body and body["role"] in ("admin", "member"):
+            target["role"] = body["role"]
+
+        save_members(members)
+        log(f"Member updated: {target['username']} (id={member_id})")
+        self._send_json(200, {"message": "Member updated"})
+
+    def _handle_members_delete(self, member_id: str) -> None:
+        if not self._require_admin():
+            return
+
+        members = load_members()
+        target = None
+        for m in members:
+            if m["id"] == member_id:
+                target = m
+                break
+
+        if not target:
+            self._send_json(404, {"error": "Member not found"})
+            return
+
+        target["status"] = "disabled"
+        save_members(members)
+        log(f"Member disabled: {target['username']} (id={member_id})")
+        self._send_json(200, {"message": "Member disabled"})
 
     # ── Web UI ────────────────────────────────────────────────────────────
 
@@ -2780,8 +3241,9 @@ def main() -> None:
     log(f"Starting on 0.0.0.0:{LISTEN_PORT}")
     log(f"Data directory: {DATA_DIR}")
 
-    # Run migration from v1 (single account) to v2 (multi-account)
+    # Run migrations
     migrate_v1_to_v2()
+    migrate_add_members()
 
     cfg = load_server_config()
     if cfg.get("master_password_hash"):
