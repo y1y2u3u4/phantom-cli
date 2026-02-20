@@ -4,3 +4,8 @@
 .phantom/
 .phantom_env/
 node_modules/
+__pycache__/
+*.png
+.playwright-mcp/
+server/ui/.next/
+server/ui/out/
