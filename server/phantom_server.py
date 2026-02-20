@@ -1979,6 +1979,9 @@ class PhantomHandler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/api/auth/logout":
             return self._handle_auth_logout()
 
+        if method == "POST" and path == "/api/auth/change-password":
+            return self._handle_auth_change_password()
+
         # ── Invite endpoints (public) ────────────────────────────────────
 
         if method == "GET" and path.startswith("/api/invite/"):
@@ -2124,9 +2127,17 @@ class PhantomHandler(BaseHTTPRequestHandler):
     # ── Handlers ──────────────────────────────────────────────────────────
 
     def _handle_health(self) -> None:
+        stats = _get_connection_stats()
+        # Enrich per_account with account names
+        accounts = load_accounts()
+        account_names = {a["id"]: a.get("name", a["id"]) for a in accounts}
+        enriched = {}
+        for aid, detail in stats.get("per_account", {}).items():
+            enriched[aid] = {**detail, "name": account_names.get(aid, aid)}
+        stats["per_account"] = enriched
         self._send_json(200, {
             "status": "ok",
-            "connections": _get_connection_stats(),
+            "connections": stats,
         })
 
     def _handle_auth_setup(self) -> None:
@@ -2267,6 +2278,62 @@ class PhantomHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(payload)
+
+    def _handle_auth_change_password(self) -> None:
+        session = self._require_auth()
+        if not session:
+            return
+
+        body = self._parse_json_body()
+        if not body:
+            self._send_json(400, {"error": "Invalid JSON body"})
+            return
+
+        current_password = body.get("current_password", "")
+        new_password = body.get("new_password", "")
+
+        if not current_password or not new_password:
+            self._send_json(400, {"error": "Both current and new password are required."})
+            return
+
+        if len(new_password) < 4:
+            self._send_json(400, {"error": "New password must be at least 4 characters."})
+            return
+
+        role = session.get("role", "admin")
+        member_id = session.get("member_id")
+
+        if role == "admin" and not member_id:
+            # Admin: change master password
+            cfg = load_server_config()
+            stored_hash = cfg.get("master_password_hash", "")
+            if not verify_password(current_password, stored_hash):
+                self._send_json(401, {"error": "Current password is incorrect."})
+                return
+            cfg["master_password_hash"] = hash_password(new_password)
+            save_server_config(cfg)
+            log("Admin changed master password")
+            self._send_json(200, {"message": "Password changed successfully."})
+        elif member_id:
+            # Member: change their own password
+            members = load_members()
+            member = None
+            for m in members:
+                if m["id"] == member_id:
+                    member = m
+                    break
+            if not member:
+                self._send_json(404, {"error": "Member not found."})
+                return
+            if not verify_password(current_password, member["password_hash"]):
+                self._send_json(401, {"error": "Current password is incorrect."})
+                return
+            member["password_hash"] = hash_password(new_password)
+            save_members(members)
+            log(f"Member {member['username']} changed password")
+            self._send_json(200, {"message": "Password changed successfully."})
+        else:
+            self._send_json(400, {"error": "Cannot determine user."})
 
     def _handle_keys_list(self) -> None:
         session = self._require_auth()

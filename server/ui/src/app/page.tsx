@@ -6,13 +6,13 @@ import { useAuth } from '@/contexts/AuthContext';
 
 export default function HomePage() {
   const router = useRouter();
-  const { state } = useAuth();
+  const { state, isAdmin } = useAuth();
 
   useEffect(() => {
     if (state === 'authenticated') {
-      router.replace('/keys');
+      router.replace(isAdmin ? '/dashboard' : '/keys');
     }
-  }, [state, router]);
+  }, [state, isAdmin, router]);
 
   // AuthGuard handles setup/login states via AppShell
   return null;

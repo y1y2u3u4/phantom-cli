@@ -33,6 +33,7 @@ export function InviteSection({ invites, onRefresh }: InviteSectionProps) {
     try {
       const result = await api.createInvite({
         max_uses: parseInt(maxUses) || 10,
+        expires_hours: parseInt(expiresHours) || 168,
       });
       setNewInviteUrl(result.invite_url);
       toast.success('Invite link created.');
@@ -60,7 +61,7 @@ export function InviteSection({ invites, onRefresh }: InviteSectionProps) {
       <Card>
         <h3 className="text-sm font-semibold text-text-primary mb-3">Generate Invite Link</h3>
         {error && <Alert type="error" message={error} />}
-        <div className="flex gap-3 items-end">
+        <div className="flex gap-3 items-end flex-wrap">
           <div className="w-32">
             <Input
               label="Max uses"
@@ -69,6 +70,21 @@ export function InviteSection({ invites, onRefresh }: InviteSectionProps) {
               onChange={(e) => setMaxUses(e.target.value)}
               min={1}
             />
+          </div>
+          <div className="w-36">
+            <label className="block text-xs font-medium text-text-secondary mb-1.5">Expires in</label>
+            <select
+              value={expiresHours}
+              onChange={(e) => setExpiresHours(e.target.value)}
+              className="w-full px-3 py-2 text-sm bg-[var(--input-bg)] border border-[var(--input-border)] rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/50"
+            >
+              <option value="1">1 hour</option>
+              <option value="6">6 hours</option>
+              <option value="24">1 day</option>
+              <option value="72">3 days</option>
+              <option value="168">7 days</option>
+              <option value="720">30 days</option>
+            </select>
           </div>
           <Button onClick={handleCreate} loading={creating} loadingText="Creating...">
             Generate Link

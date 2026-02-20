@@ -16,6 +16,7 @@ import type {
   InviteCreateResponse,
   InviteCheckResponse,
   InviteRegisterResponse,
+  HealthResponse,
 } from './types';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
@@ -75,6 +76,11 @@ export const api = {
       ...(username ? { username } : {}),
     }),
   logout: () => request<MessageResponse>('POST', '/api/auth/logout'),
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<MessageResponse>('POST', '/api/auth/change-password', {
+      current_password: currentPassword,
+      new_password: newPassword,
+    }),
 
   // Keys
   listKeys: () => request<KeysListResponse>('GET', '/api/keys'),
@@ -110,6 +116,9 @@ export const api = {
     request<UsageResponse>('GET', `/api/usage${month ? `?month=${month}` : ''}`),
   refreshQuota: () =>
     request<MessageResponse>('POST', '/api/usage/refresh'),
+
+  // Health
+  getHealth: () => request<HealthResponse>('GET', '/api/health'),
 
   // Assignments
   getAssignments: () => request<AssignmentsResponse>('GET', '/api/assignments'),

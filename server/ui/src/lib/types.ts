@@ -207,6 +207,30 @@ export interface InviteRegisterResponse {
   username: string;
 }
 
+// ── Health ───────────────────────────────────────────────────────────────────
+
+export interface HealthPerAccount {
+  total: number;
+  idle: number;
+  active: number;
+  name: string;
+}
+
+export interface HealthConnections {
+  active: number;
+  idle: number;
+  truly_active: number;
+  max: number;
+  per_account: Record<string, HealthPerAccount>;
+  per_account_max: number;
+  idle_timeout: string;
+}
+
+export interface HealthResponse {
+  status: string;
+  connections: HealthConnections;
+}
+
 // ── Common ───────────────────────────────────────────────────────────────────
 
 export interface MessageResponse {
