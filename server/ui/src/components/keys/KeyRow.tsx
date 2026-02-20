@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { api } from '@/lib/api';
+import { useAuth } from '@/contexts/AuthContext';
 import type { ApiKey, Account } from '@/lib/types';
 import { formatDate, formatUSD } from '@/lib/utils';
 import { Button } from '@/components/ui/Button';
@@ -14,6 +15,7 @@ interface KeyRowProps {
 }
 
 export function KeyRow({ keyData, accounts, onRefresh }: KeyRowProps) {
+  const { isAdmin } = useAuth();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [assigning, setAssigning] = useState(false);
@@ -67,17 +69,19 @@ export function KeyRow({ keyData, accounts, onRefresh }: KeyRowProps) {
         </td>
         <td className="px-4 py-3 text-right">
           <div className="flex items-center justify-end gap-2">
-            <select
-              value={keyData.account_id || ''}
-              onChange={(e) => handleAssign(e.target.value)}
-              disabled={assigning}
-              className="px-2 py-1 text-xs bg-[var(--input-bg)] border border-[var(--input-border)] rounded text-text-primary focus:outline-none"
-            >
-              <option value="">Auto</option>
-              {accounts.map((a) => (
-                <option key={a.id} value={a.id}>{a.name}</option>
-              ))}
-            </select>
+            {isAdmin && (
+              <select
+                value={keyData.account_id || ''}
+                onChange={(e) => handleAssign(e.target.value)}
+                disabled={assigning}
+                className="px-2 py-1 text-xs bg-[var(--input-bg)] border border-[var(--input-border)] rounded text-text-primary focus:outline-none"
+              >
+                <option value="">Auto</option>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>{a.name}</option>
+                ))}
+              </select>
+            )}
             <Button variant="danger" size="sm" onClick={() => setConfirmDelete(true)}>
               Delete
             </Button>

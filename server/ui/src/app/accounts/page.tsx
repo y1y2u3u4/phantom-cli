@@ -1,7 +1,9 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
+import { useAuth } from '@/contexts/AuthContext';
 import type { Account } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
 import { Spinner } from '@/components/ui/Spinner';
@@ -11,6 +13,12 @@ import { AccountCard } from '@/components/accounts/AccountCard';
 import { AccountForm } from '@/components/accounts/AccountForm';
 
 export default function AccountsPage() {
+  const { isAdmin } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!isAdmin) router.replace('/keys');
+  }, [isAdmin, router]);
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Account | null>(null);

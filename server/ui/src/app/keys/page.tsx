@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { api } from '@/lib/api';
+import { useAuth } from '@/contexts/AuthContext';
 import type { ApiKey, Account } from '@/lib/types';
 import { Card } from '@/components/ui/Card';
 import { CreateKeyForm } from '@/components/keys/CreateKeyForm';
@@ -9,17 +10,21 @@ import { NewKeyBanner } from '@/components/keys/NewKeyBanner';
 import { KeysTable } from '@/components/keys/KeysTable';
 
 export default function KeysPage() {
+  const { isAdmin } = useAuth();
   const [keys, setKeys] = useState<ApiKey[] | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [newKey, setNewKey] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [keysRes, accRes] = await Promise.all([api.listKeys(), api.listAccounts()]);
+      const [keysRes, accRes] = await Promise.all([
+        api.listKeys(),
+        isAdmin ? api.listAccounts() : Promise.resolve({ accounts: [] as Account[] }),
+      ]);
       setKeys(keysRes.keys);
       setAccounts(accRes.accounts);
     } catch {}
-  }, []);
+  }, [isAdmin]);
 
   useEffect(() => { refresh(); }, [refresh]);
 

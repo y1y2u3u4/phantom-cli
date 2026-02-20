@@ -3,6 +3,8 @@
 export interface AuthCheckResponse {
   authenticated: boolean;
   needs_setup: boolean;
+  role?: 'admin' | 'member';
+  username?: string | null;
 }
 
 // ── Keys ─────────────────────────────────────────────────────────────────────
@@ -154,6 +156,55 @@ export interface AssignmentEntry {
 export interface AssignmentsResponse {
   by_api_key: Record<string, AssignmentEntry>;
   by_client_ip: Record<string, AssignmentEntry>;
+}
+
+// ── Members ─────────────────────────────────────────────────────────────────
+
+export interface Member {
+  id: string;
+  username: string;
+  role: 'admin' | 'member';
+  status: 'active' | 'disabled';
+  created_at: string | null;
+  last_login_at: string | null;
+  last_login_ip: string | null;
+  key_count: number;
+}
+
+export interface MembersListResponse {
+  members: Member[];
+}
+
+// ── Invites ─────────────────────────────────────────────────────────────────
+
+export interface Invite {
+  token: string;
+  created_at: string | null;
+  expires_at: string;
+  max_uses: number;
+  use_count: number;
+  status: 'active' | 'expired' | 'exhausted';
+}
+
+export interface InvitesListResponse {
+  invites: Invite[];
+}
+
+export interface InviteCreateResponse {
+  token: string;
+  invite_url: string;
+  expires_at: string;
+  max_uses: number;
+}
+
+export interface InviteCheckResponse {
+  valid: boolean;
+  error?: string;
+}
+
+export interface InviteRegisterResponse {
+  message: string;
+  username: string;
 }
 
 // ── Common ───────────────────────────────────────────────────────────────────

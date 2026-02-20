@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { api } from '@/lib/api';
+import { useAuth } from '@/contexts/AuthContext';
 import type { Account } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -13,6 +14,7 @@ interface CreateKeyFormProps {
 }
 
 export function CreateKeyForm({ accounts, onCreated }: CreateKeyFormProps) {
+  const { isAdmin } = useAuth();
   const [name, setName] = useState('');
   const [accountId, setAccountId] = useState('');
   const [error, setError] = useState('');
@@ -49,7 +51,7 @@ export function CreateKeyForm({ accounts, onCreated }: CreateKeyFormProps) {
             placeholder="e.g. Team member name"
           />
         </div>
-        {accounts.length > 0 && (
+        {isAdmin && accounts.length > 0 && (
           <div className="w-48">
             <label className="block text-xs font-medium text-text-secondary mb-1.5">Account</label>
             <select

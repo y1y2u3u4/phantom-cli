@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/Button';
 
 export function Header() {
   const { theme, toggle } = useTheme();
-  const { state, logout } = useAuth();
+  const { state, role, username, logout } = useAuth();
 
   return (
     <header className="h-14 border-b border-border bg-card flex items-center justify-between px-5">
@@ -31,9 +31,19 @@ export function Header() {
           {theme === 'dark' ? '\u2600\uFE0F' : '\uD83C\uDF19'}
         </button>
         {state === 'authenticated' && (
-          <Button variant="ghost" size="sm" onClick={logout}>
-            Logout
-          </Button>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-text-secondary">
+              {username || 'Admin'}
+            </span>
+            {role === 'member' && (
+              <span className="text-xs bg-accent/10 text-accent px-1.5 py-0.5 rounded">
+                Member
+              </span>
+            )}
+            <Button variant="ghost" size="sm" onClick={logout}>
+              Logout
+            </Button>
+          </div>
         )}
       </div>
     </header>

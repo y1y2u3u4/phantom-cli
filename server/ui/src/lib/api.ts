@@ -11,6 +11,11 @@ import type {
   TestResponse,
   UsageResponse,
   AssignmentsResponse,
+  MembersListResponse,
+  InvitesListResponse,
+  InviteCreateResponse,
+  InviteCheckResponse,
+  InviteRegisterResponse,
 } from './types';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
@@ -64,7 +69,11 @@ export const api = {
   // Auth
   checkAuth: () => request<AuthCheckResponse>('GET', '/api/auth/check'),
   setup: (password: string) => request<MessageResponse>('POST', '/api/auth/setup', { password }),
-  login: (password: string) => request<MessageResponse>('POST', '/api/auth/login', { password }),
+  login: (password: string, username?: string) =>
+    request<MessageResponse>('POST', '/api/auth/login', {
+      password,
+      ...(username ? { username } : {}),
+    }),
   logout: () => request<MessageResponse>('POST', '/api/auth/logout'),
 
   // Keys
@@ -104,4 +113,28 @@ export const api = {
 
   // Assignments
   getAssignments: () => request<AssignmentsResponse>('GET', '/api/assignments'),
+
+  // Members (admin only)
+  listMembers: () => request<MembersListResponse>('GET', '/api/members'),
+  updateMember: (id: string, data: { role?: string; status?: string }) =>
+    request<MessageResponse>('PUT', `/api/members/${encodeURIComponent(id)}`, data),
+  deleteMember: (id: string) =>
+    request<MessageResponse>('DELETE', `/api/members/${encodeURIComponent(id)}`),
+
+  // Invites (admin only)
+  listInvites: () => request<InvitesListResponse>('GET', '/api/invites'),
+  createInvite: (data?: { max_uses?: number; expires_hours?: number }) =>
+    request<InviteCreateResponse>('POST', '/api/invites', data || {}),
+  deleteInvite: (token: string) =>
+    request<MessageResponse>('DELETE', `/api/invites/${encodeURIComponent(token)}`),
+
+  // Invite (public)
+  checkInvite: (token: string) =>
+    request<InviteCheckResponse>('GET', `/api/invite/${encodeURIComponent(token)}`),
+  registerInvite: (token: string, username: string, password: string) =>
+    request<InviteRegisterResponse>(
+      'POST',
+      `/api/invite/${encodeURIComponent(token)}/register`,
+      { username, password },
+    ),
 };

@@ -1991,6 +1991,9 @@ class PhantomHandler(BaseHTTPRequestHandler):
 
         # Serve SPA for /invite/<token> page (JS handles routing)
         if method == "GET" and path.startswith("/invite/"):
+            # Try Next.js invite.html first, fallback to legacy ui.html
+            if self._serve_static("/invite"):
+                return
             return self._handle_ui()
 
         # ── Credential download (Bearer API key auth) ─────────────────────
