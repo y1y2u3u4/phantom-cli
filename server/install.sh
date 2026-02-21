@@ -298,6 +298,32 @@ else
     fi
 fi
 
+# ── Step 7: Build auth Docker image ──────────────────────────────
+
+echo -e "${BOLD}Step 7: Account Auth Docker Image${NC}"
+echo "────────────────────────────────────────"
+
+# Copy auth-docker files
+mkdir -p "$INSTALL_DIR/auth-docker"
+download_file "server/auth-docker/Dockerfile" "$INSTALL_DIR/auth-docker/Dockerfile"
+
+# Copy phantom-auth script
+download_file "server/phantom-auth.sh" "$INSTALL_DIR/phantom-auth.sh"
+chmod +x "$INSTALL_DIR/phantom-auth.sh"
+ln -sf "$INSTALL_DIR/phantom-auth.sh" /usr/local/bin/phantom-auth
+
+# Build Docker image
+if docker image inspect phantom-auth >/dev/null 2>&1; then
+    log_success "Auth Docker image already built"
+else
+    log_info "Building auth Docker image (this may take a minute)..."
+    if docker build -t phantom-auth "$INSTALL_DIR/auth-docker" >/dev/null 2>&1; then
+        log_success "Auth Docker image built"
+    else
+        log_warn "Could not build auth image. Build manually: docker build -t phantom-auth $INSTALL_DIR/auth-docker"
+    fi
+fi
+
 echo ""
 
 # ── Verify & Summary ──────────────────────────────────────────────
@@ -334,11 +360,14 @@ echo ""
 echo -e "  ${BOLD}VPS IP:${NC} ${CYAN}${VPS_IP}${NC}"
 echo ""
 echo -e "  ${BOLD}Next steps:${NC}"
-echo -e "    ${YELLOW}1.${NC} Log in to Claude Code on this VPS:"
-echo -e "       ${GREEN}claude${NC}"
-echo -e "       Complete the OAuth authentication in your browser."
+echo -e "    ${YELLOW}1.${NC} Open the management UI, create an account with upstream proxy:"
+echo -e "       ${GREEN}http://${VPS_IP}:${SERVER_PORT}/${NC}"
 echo ""
-echo -e "    ${YELLOW}2.${NC} Open the management UI to create an API key:"
+echo -e "    ${YELLOW}2.${NC} Authenticate the account in an isolated Docker container:"
+echo -e "       ${GREEN}phantom-auth <account_id>${NC}"
+echo -e "       Each account uses its own proxy, preventing cross-account association."
+echo ""
+echo -e "    ${YELLOW}3.${NC} Open the management UI to create an API key:"
 echo -e "       ${GREEN}http://${VPS_IP}:${SERVER_PORT}/${NC}"
 echo -e "       Log in with your master password, then create an API key."
 echo ""
