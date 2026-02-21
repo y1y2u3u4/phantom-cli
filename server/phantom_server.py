@@ -1350,39 +1350,6 @@ def _query_claude_usage_with_timeout(account: dict) -> dict | None:
     return result_holder[0]
 
 
-def _oauth_usage_fallback(account: dict) -> dict | None:
-    """Fallback: query usage via OAuth API when tmux/Claude method fails."""
-    usage_data = fetch_anthropic_usage(account)
-    if not usage_data:
-        return None
-
-    # Convert OAuth API format to our internal cache format
-    result: dict = {
-        "session_pct": None, "weekly_all_pct": None,
-        "weekly_sonnet_pct": None, "weekly_opus_pct": None,
-        "session_resets": None, "weekly_all_resets": None,
-        "extra_usage_enabled": False, "error": None,
-    }
-
-    for window_key, pct_key, resets_key in [
-        ("five_hour", "session_pct", "session_resets"),
-        ("seven_day", "weekly_all_pct", "weekly_all_resets"),
-    ]:
-        window = usage_data.get(window_key)
-        if isinstance(window, dict):
-            util = window.get("utilization")
-            if util is not None:
-                result[pct_key] = int(round(float(util)))
-            result[resets_key] = window.get("resets_at")
-
-    extra = usage_data.get("extra_usage")
-    if isinstance(extra, dict):
-        result["extra_usage_enabled"] = extra.get("is_enabled", False)
-
-    log(f"OAuth fallback for {account['id']}: session={result.get('session_pct')}% weekly={result.get('weekly_all_pct')}%")
-    return result
-
-
 def query_all_accounts_usage() -> dict:
     """Query usage for all active accounts. Returns {account_id: usage_dict}."""
     global _usage_query_running
@@ -1396,16 +1363,8 @@ def query_all_accounts_usage() -> dict:
         active = [a for a in accounts if a.get("status") == "active"]
         results = {}
         for account in active:
-            # Primary: Claude Code tmux query (with timeout)
+            # Query via Claude Code tmux session (with timeout)
             usage = _query_claude_usage_with_timeout(account)
-
-            # Fallback: OAuth API if tmux query failed or returned error
-            if not usage or usage.get("error"):
-                tmux_err = usage.get("error", "no result") if usage else "no result"
-                log(f"Tmux query failed for {account['id']} ({tmux_err}), trying OAuth fallback")
-                oauth_usage = _oauth_usage_fallback(account)
-                if oauth_usage and oauth_usage.get("session_pct") is not None:
-                    usage = oauth_usage
 
             if usage:
                 usage["queried_at"] = time.time()
