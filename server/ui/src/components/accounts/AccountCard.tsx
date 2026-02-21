@@ -53,6 +53,51 @@ function timeAgo(ts: number | null | undefined): string {
   return `${Math.floor(diffSec / 86400)}d ago`;
 }
 
+function AuthCommand({ accountId }: { accountId: string }) {
+  const [copied, setCopied] = useState(false);
+  const host = typeof window !== 'undefined' ? window.location.hostname : 'VPS_IP';
+  const cmd = `ssh root@${host} "phantom-auth ${accountId}"`;
+
+  const copy = () => {
+    navigator.clipboard.writeText(cmd).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  return (
+    <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/20 p-2.5 space-y-1.5">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-yellow-500">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+        Needs Authentication
+      </div>
+      <div className="flex items-center gap-1.5">
+        <code className="flex-1 text-[11px] text-text-secondary bg-[var(--card-bg)] px-2 py-1 rounded border border-border overflow-x-auto whitespace-nowrap">
+          {cmd}
+        </code>
+        <button
+          onClick={copy}
+          className="shrink-0 p-1 rounded hover:bg-border/50 transition-colors"
+          title="Copy command"
+        >
+          {copied ? (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-success">
+              <polyline points="20 6 9 17 4 12"/>
+            </svg>
+          ) : (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-text-secondary">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+            </svg>
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function AccountCard({ account, onEdit, onRefresh }: AccountCardProps) {
   const [showCreds, setShowCreds] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -189,12 +234,14 @@ export function AccountCard({ account, onEdit, onRefresh }: AccountCardProps) {
           </div>
         )}
 
-        {/* Credentials status (when has credentials) */}
-        {account.has_credentials && (
+        {/* Auth status */}
+        {account.has_credentials ? (
           <div className="flex items-center gap-1.5 text-xs">
             <span className="text-success">{'\u2713'}</span>
-            <span className="text-text-secondary">Credentials uploaded</span>
+            <span className="text-text-secondary">Authenticated</span>
           </div>
+        ) : (
+          <AuthCommand accountId={account.id} />
         )}
 
         {/* Actions */}
