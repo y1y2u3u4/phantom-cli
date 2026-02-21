@@ -24,6 +24,7 @@ import os
 import random
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import struct
@@ -1258,7 +1259,26 @@ def _query_claude_usage(account: dict) -> dict | None:
             "TERM": "xterm-256color",
             "LANG": os.environ.get("LANG", "en_US.UTF-8"),
         }
-        env_args = " ".join(f"{k}={v}" for k, v in clean_env.items())
+
+        # Route Claude Code traffic through account's upstream proxy
+        upstream = account.get("upstream_proxy", {})
+        proxy_type = upstream.get("type", "direct")
+        if proxy_type != "direct":
+            p_host = upstream.get("host", "")
+            p_port = upstream.get("port", 0)
+            p_user = upstream.get("username", "")
+            p_pass = upstream.get("password", "")
+            if p_host and p_port:
+                auth = f"{p_user}:{p_pass}@" if p_user else ""
+                scheme = "http" if proxy_type == "http" else "socks5h"
+                proxy_url = f"{scheme}://{auth}{p_host}:{p_port}"
+                clean_env["HTTP_PROXY"] = proxy_url
+                clean_env["HTTPS_PROXY"] = proxy_url
+                clean_env["http_proxy"] = proxy_url
+                clean_env["https_proxy"] = proxy_url
+                log(f"Usage query for {account['id']}: routing through {proxy_type} proxy {p_host}:{p_port}")
+
+        env_args = " ".join(f"{k}={shlex.quote(v)}" for k, v in clean_env.items())
 
         # Start tmux session running claude
         subprocess.run(
