@@ -91,7 +91,11 @@ CREDENTIAL_REL_PATHS = [
 ]
 
 # Token estimation constants
-TLS_OVERHEAD_FACTOR = 0.75   # ~25% of bytes are TLS/HTTP overhead
+# Upstream (request): ~25% overhead from TLS + HTTP/2 framing + JSON structure
+UPSTREAM_CONTENT_FACTOR = 0.75
+# Downstream (response): ~80% overhead from TLS + SSE framing (event:/data: lines,
+# JSON envelope per chunk, non-content events like ping/message_start/stop)
+DOWNSTREAM_CONTENT_FACTOR = 0.20
 BYTES_PER_CHAR = 1.2         # UTF-8 average including JSON structure
 CHARS_PER_TOKEN = 4          # Anthropic's rough guideline
 
@@ -154,6 +158,16 @@ _active_per_account: dict = {}    # {account_id: int}
 _connections_lock = threading.Lock()
 _account_last_connect: dict = {}  # {account_id: float} last CONNECT timestamp per account
 _account_rate_locks: dict = {}    # {account_id: threading.Lock} serialise rate-limit check
+
+# Daily connection counter (in-memory, auto-resets on date change)
+# {account_id: {"date": "YYYY-MM-DD", "connections": int}}
+_daily_usage: dict = {}
+_daily_usage_lock = threading.Lock()
+
+# Daily baseline for weekly utilization tracking
+# {account_id: {"date": "YYYY-MM-DD", "weekly_pct": float}}
+_daily_baseline: dict = {}
+_daily_baseline_lock = threading.Lock()
 
 # Connection registry for idle detection
 # {conn_id: {"account_id": str, "target": str, "last_activity": float, "started_at": float}}
@@ -680,6 +694,137 @@ def _is_account_quota_exhausted(account: dict) -> tuple[bool, str]:
     return False, ""
 
 
+# ── Daily connection tracking & utilization-based limits ──────────────────────
+
+def get_daily_connections(account_id: str) -> int:
+    """Get today's connection count for an account. Auto-resets on date change."""
+    today = time.strftime("%Y-%m-%d")
+    with _daily_usage_lock:
+        entry = _daily_usage.get(account_id)
+        if not entry or entry["date"] != today:
+            return 0
+        return entry["connections"]
+
+
+def increment_daily_connections(account_id: str) -> None:
+    """Increment today's connection count for an account."""
+    today = time.strftime("%Y-%m-%d")
+    with _daily_usage_lock:
+        entry = _daily_usage.get(account_id)
+        if not entry or entry["date"] != today:
+            _daily_usage[account_id] = {"date": today, "connections": 1}
+        else:
+            entry["connections"] += 1
+
+
+def _get_daily_baseline(account_id: str) -> float | None:
+    """Get or create today's baseline weekly_pct for an account."""
+    today = time.strftime("%Y-%m-%d")
+    with _daily_baseline_lock:
+        entry = _daily_baseline.get(account_id)
+        if entry and entry["date"] == today:
+            return entry["weekly_pct"]
+    return None
+
+
+def _set_daily_baseline(account_id: str, weekly_pct: float) -> None:
+    """Record baseline weekly_pct at the first connection of the day."""
+    today = time.strftime("%Y-%m-%d")
+    with _daily_baseline_lock:
+        existing = _daily_baseline.get(account_id)
+        if not existing or existing["date"] != today:
+            _daily_baseline[account_id] = {"date": today, "weekly_pct": weekly_pct}
+
+
+def _is_usage_limit_reached(account: dict) -> tuple[bool, str]:
+    """
+    Check if account has hit utilization-based limits.
+    Two thresholds (configurable per account):
+      - session_max_pct: max 5-hour session utilization (default 80%)
+      - daily_budget_pct: max daily increase in 7-day weekly utilization (default 10%)
+    Falls back to daily_limit_connections if no utilization data is available.
+    """
+    quota = account.get("quota", {})
+    session_max = quota.get("session_max_pct", 80)
+    daily_budget = quota.get("daily_budget_pct", 10)
+
+    cached = get_cached_claude_usage(account["id"])
+
+    if cached:
+        # Check 1: 5-hour session utilization
+        session_pct = cached.get("session_pct")
+        if session_pct is not None and float(session_pct) >= session_max:
+            resets = cached.get("session_resets", "unknown")
+            return True, f"Session {session_pct}% >= {session_max}% limit. Resets: {resets}"
+
+        # Check 2: daily budget on 7-day weekly utilization
+        weekly_pct = cached.get("weekly_all_pct")
+        if weekly_pct is not None and daily_budget is not None:
+            weekly_val = float(weekly_pct)
+            baseline = _get_daily_baseline(account["id"])
+            if baseline is None:
+                # First check today — record baseline
+                _set_daily_baseline(account["id"], weekly_val)
+            else:
+                increase = weekly_val - baseline
+                if increase >= daily_budget:
+                    return True, (
+                        f"Daily budget exhausted: weekly {baseline:.0f}% -> {weekly_val:.0f}% "
+                        f"(+{increase:.1f}%, limit +{daily_budget}%/day)"
+                    )
+    else:
+        # Fallback: daily connection count limit when no utilization data
+        conn_limit = quota.get("daily_limit_connections")
+        if conn_limit is not None:
+            current = get_daily_connections(account["id"])
+            if current >= conn_limit:
+                return True, f"Daily connection limit ({current}/{conn_limit}, no utilization data)"
+
+    return False, ""
+
+
+def _find_available_account(
+    exhausted_account: dict, key_record: dict | None, client_ip: str,
+) -> dict | None:
+    """Find an alternative account when current one hits utilization limits."""
+    accounts = load_accounts()
+    active = [a for a in accounts if a.get("status") == "active" and a["id"] != exhausted_account["id"]]
+    if not active:
+        return None
+
+    # Filter out accounts that also hit their limits
+    available = []
+    for a in active:
+        reached, _ = _is_usage_limit_reached(a)
+        if not reached:
+            available.append(a)
+
+    if not available:
+        return None
+
+    # Pick best by load score
+    scored = [(a, _get_account_load_score(a)) for a in available]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    chosen = scored[0][0]
+
+    # Update sticky assignment
+    assignments = load_assignments()
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    key_id = key_record["id"] if key_record else None
+    if key_id:
+        assignments.setdefault("by_api_key", {})[key_id] = {
+            "account_id": chosen["id"], "assigned_at": now, "reason": "usage_rotate",
+        }
+    if client_ip:
+        assignments.setdefault("by_client_ip", {})[client_ip] = {
+            "account_id": chosen["id"], "assigned_at": now, "reason": "usage_rotate",
+        }
+    save_assignments(assignments)
+    log(f"Usage limit rotate: {exhausted_account['id']} → {chosen['id']} ({chosen.get('name', '?')})")
+
+    return chosen
+
+
 # ── Account resolution & sticky sessions ─────────────────────────────────────
 
 def resolve_account(key_record: dict | None, client_ip: str) -> dict | None:
@@ -766,17 +911,17 @@ def resolve_account(key_record: dict | None, client_ip: str) -> dict | None:
 
 # ── Token & cost estimation ──────────────────────────────────────────────────
 
-def estimate_tokens(raw_bytes: int) -> int:
+def estimate_tokens(raw_bytes: int, content_factor: float = UPSTREAM_CONTENT_FACTOR) -> int:
     """Estimate token count from raw TLS byte count."""
-    content_bytes = raw_bytes * TLS_OVERHEAD_FACTOR
+    content_bytes = raw_bytes * content_factor
     chars = content_bytes / BYTES_PER_CHAR
     return int(chars / CHARS_PER_TOKEN)
 
 
 def estimate_cost(bytes_up: int, bytes_down: int) -> float:
     """Estimate cost in USD from upstream/downstream byte counts."""
-    tokens_in = estimate_tokens(bytes_up)
-    tokens_out = estimate_tokens(bytes_down)
+    tokens_in = estimate_tokens(bytes_up, UPSTREAM_CONTENT_FACTOR)
+    tokens_out = estimate_tokens(bytes_down, DOWNSTREAM_CONTENT_FACTOR)
     cost = (tokens_in / 1_000_000 * MODEL_PRICING["input"] +
             tokens_out / 1_000_000 * MODEL_PRICING["output"])
     return round(cost, 6)
@@ -796,7 +941,10 @@ def estimate_remaining_quota(account: dict) -> float:
     total_estimated = 0.0
     for _key_id, data in month_usage.items():
         if data.get("account_id") == account["id"]:
-            total_estimated += data.get("estimated_cost_usd", 0.0)
+            total_estimated += estimate_cost(
+                data.get("bytes_upstream", 0),
+                data.get("bytes_downstream", 0),
+            )
 
     return max(0.0, limit - total_estimated)
 
@@ -1435,8 +1583,8 @@ class UsageTracker:
                 entry["connections"] += 1
                 entry["bytes_upstream"] += record["bytes_up"]
                 entry["bytes_downstream"] += record["bytes_down"]
-                entry["estimated_tokens_in"] += estimate_tokens(record["bytes_up"])
-                entry["estimated_tokens_out"] += estimate_tokens(record["bytes_down"])
+                entry["estimated_tokens_in"] += estimate_tokens(record["bytes_up"], UPSTREAM_CONTENT_FACTOR)
+                entry["estimated_tokens_out"] += estimate_tokens(record["bytes_down"], DOWNSTREAM_CONTENT_FACTOR)
                 entry["estimated_cost_usd"] += estimate_cost(record["bytes_up"], record["bytes_down"])
                 entry["estimated_cost_usd"] = round(entry["estimated_cost_usd"], 6)
 
@@ -1890,6 +2038,30 @@ class PhantomHandler(BaseHTTPRequestHandler):
                     pass
                 return
 
+        # ── Utilization-based limit: rotate or reject ──
+        if account:
+            usage_hit, usage_reason = _is_usage_limit_reached(account)
+            if usage_hit:
+                alt = _find_available_account(account, key_record, client_ip)
+                if alt:
+                    log(f"CONNECT {target} from {client_ip}: {usage_reason}, rotating to {alt.get('name', alt['id'])}")
+                    account = alt
+                    upstream_proxy = alt.get("upstream_proxy")
+                    account_id = alt["id"]
+                    proxy_type = upstream_proxy.get("type", "direct") if upstream_proxy else "direct"
+                    proxy_info = f" via account={alt.get('name', account_id)} proxy={proxy_type}"
+                else:
+                    log(f"CONNECT {target} from {client_ip} REJECTED: {usage_reason} (all accounts exhausted)")
+                    self.send_response(429, "Usage Limit Reached")
+                    self.send_header("Content-Type", "text/plain")
+                    self.send_header("Retry-After", "3600")
+                    self.end_headers()
+                    try:
+                        self.wfile.write(f"All accounts at usage limit. {usage_reason}\n".encode())
+                    except Exception:
+                        pass
+                    return
+
         # ── Concurrency control: acquire global semaphore ──
         if not _global_semaphore.acquire(timeout=CONNECT_QUEUE_TIMEOUT):
             log(f"CONNECT {target} from {client_ip} REJECTED: server busy ({_active_connections}/{MAX_GLOBAL_CONNECTIONS})")
@@ -1936,6 +2108,8 @@ class PhantomHandler(BaseHTTPRequestHandler):
                 _account_last_connect[account_id] = time.time()
 
         _track_connection(account_id, +1)
+        if account_id:
+            increment_daily_connections(account_id)
         log(f"CONNECT {target} from {client_ip}{proxy_info} (conns: {_active_connections}/{MAX_GLOBAL_CONNECTIONS})")
 
         try:
@@ -2374,7 +2548,10 @@ class PhantomHandler(BaseHTTPRequestHandler):
                 "last_used_ip": k.get("last_used_ip"),
                 "usage_this_month": {
                     "connections": key_usage.get("connections", 0),
-                    "estimated_cost_usd": round(key_usage.get("estimated_cost_usd", 0.0), 4),
+                    "estimated_cost_usd": round(estimate_cost(
+                        key_usage.get("bytes_upstream", 0),
+                        key_usage.get("bytes_downstream", 0),
+                    ), 4),
                 } if key_usage else None,
             })
         self._send_json(200, {"keys": masked})
@@ -2564,6 +2741,16 @@ class PhantomHandler(BaseHTTPRequestHandler):
                         rq["subscription_type"] = "team"
                 real_quota = rq
 
+            quota = a.get("quota", {})
+            daily_used = get_daily_connections(a["id"])
+            baseline = _get_daily_baseline(a["id"])
+            cached_usage = get_cached_claude_usage(a["id"])
+            current_weekly = None
+            current_session = None
+            if cached_usage:
+                current_weekly = cached_usage.get("weekly_all_pct")
+                current_session = cached_usage.get("session_pct")
+
             result.append({
                 "id": a["id"],
                 "name": a.get("name", ""),
@@ -2571,6 +2758,11 @@ class PhantomHandler(BaseHTTPRequestHandler):
                 "upstream_proxy": masked_proxy,
                 "has_credentials": has_credentials,
                 "real_quota": real_quota,
+                "quota": quota,
+                "daily_connections_today": daily_used,
+                "daily_baseline_weekly_pct": baseline,
+                "current_weekly_pct": current_weekly,
+                "current_session_pct": current_session,
                 "created_at": a.get("created_at"),
                 "updated_at": a.get("updated_at"),
             })
@@ -2941,6 +3133,14 @@ class PhantomHandler(BaseHTTPRequestHandler):
             my_key_ids = {k["id"] for k in all_keys if k.get("created_by_member") == member_id}
             month_data = {kid: v for kid, v in month_data.items() if kid in my_key_ids}
 
+        # Recalculate cost from raw bytes (ensures latest pricing/factors apply)
+        for _kid, data in month_data.items():
+            up = data.get("bytes_upstream", 0)
+            down = data.get("bytes_downstream", 0)
+            data["estimated_tokens_in"] = estimate_tokens(up, UPSTREAM_CONTENT_FACTOR)
+            data["estimated_tokens_out"] = estimate_tokens(down, DOWNSTREAM_CONTENT_FACTOR)
+            data["estimated_cost_usd"] = estimate_cost(up, down)
+
         # Build per-account summary
         accounts = load_accounts()
         accounts_map = {a["id"]: a for a in accounts}
@@ -2950,12 +3150,16 @@ class PhantomHandler(BaseHTTPRequestHandler):
             acc_id = data.get("account_id", "unknown")
             if acc_id not in account_summary:
                 acc = accounts_map.get(acc_id, {})
+                acc_quota = acc.get("quota", {})
                 account_summary[acc_id] = {
                     "account_name": acc.get("name", "Unknown"),
                     "connections": 0,
                     "bytes_upstream": 0,
                     "bytes_downstream": 0,
                     "estimated_cost_usd": 0.0,
+                    "daily_connections_today": get_daily_connections(acc_id),
+                    "session_max_pct": acc_quota.get("session_max_pct", 80),
+                    "daily_budget_pct": acc_quota.get("daily_budget_pct", 10),
                 }
             s = account_summary[acc_id]
             s["connections"] += data.get("connections", 0)

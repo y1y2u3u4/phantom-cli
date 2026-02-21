@@ -157,6 +157,38 @@ export function AccountCard({ account, onEdit, onRefresh }: AccountCardProps) {
           </div>
         )}
 
+        {/* Usage limits info */}
+        {account.quota && (account.quota.session_max_pct || account.quota.daily_budget_pct) && (
+          <div className="space-y-1">
+            {account.current_session_pct != null && (
+              <QuotaBar
+                label={`Session (max ${account.quota.session_max_pct ?? 80}%)`}
+                pct={account.current_session_pct}
+                resetsIn={null}
+              />
+            )}
+            {account.daily_baseline_weekly_pct != null && account.current_weekly_pct != null && (
+              <div>
+                <div className="flex justify-between text-xs mb-0.5">
+                  <span className="text-text-secondary">Daily Budget (+{account.quota.daily_budget_pct ?? 10}%/day)</span>
+                  <span className={barTextColor(Math.round(((account.current_weekly_pct - account.daily_baseline_weekly_pct) / (account.quota.daily_budget_pct ?? 10)) * 100))}>
+                    +{Math.max(0, account.current_weekly_pct - account.daily_baseline_weekly_pct).toFixed(1)}% / {account.quota.daily_budget_pct ?? 10}%
+                  </span>
+                </div>
+                <div className="h-1.5 bg-border rounded-full overflow-hidden">
+                  <div
+                    className={`h-full ${barColor(Math.round(((account.current_weekly_pct - account.daily_baseline_weekly_pct) / (account.quota.daily_budget_pct ?? 10)) * 100))} rounded-full transition-all`}
+                    style={{ width: `${Math.min(100, Math.max(0, (account.current_weekly_pct - account.daily_baseline_weekly_pct) / (account.quota.daily_budget_pct ?? 10)) * 100)}%` }}
+                  />
+                </div>
+              </div>
+            )}
+            <div className="text-[10px] text-text-secondary/60">
+              Today: {account.daily_connections_today || 0} connections
+            </div>
+          </div>
+        )}
+
         {/* Credentials status (when has credentials) */}
         {account.has_credentials && (
           <div className="flex items-center gap-1.5 text-xs">

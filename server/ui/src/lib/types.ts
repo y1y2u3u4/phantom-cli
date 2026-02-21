@@ -77,6 +77,14 @@ export interface AccountQuotaResponse {
   queried_at: number | null;
 }
 
+export interface AccountQuota {
+  monthly_limit_usd?: number;
+  reset_day?: number;
+  daily_limit_connections?: number | null;
+  session_max_pct?: number;
+  daily_budget_pct?: number;
+}
+
 export interface Account {
   id: string;
   name: string;
@@ -84,6 +92,11 @@ export interface Account {
   upstream_proxy: UpstreamProxy;
   has_credentials: boolean;
   real_quota: RealQuota | null;
+  quota?: AccountQuota;
+  daily_connections_today?: number;
+  daily_baseline_weekly_pct?: number | null;
+  current_weekly_pct?: number | null;
+  current_session_pct?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -101,11 +114,13 @@ export interface AccountCreateResponse {
 export interface CreateAccountPayload {
   name: string;
   upstream_proxy?: UpstreamProxyInput;
+  quota?: AccountQuota;
 }
 
 export interface UpdateAccountPayload {
   name?: string;
   upstream_proxy?: UpstreamProxyInput;
+  quota?: AccountQuota;
   status?: 'active' | 'exhausted' | 'disabled';
 }
 
@@ -136,6 +151,8 @@ export interface UsageAccountData {
   bytes_upstream: number;
   bytes_downstream: number;
   estimated_cost_usd: number;
+  daily_connections_today?: number;
+  daily_limit_connections?: number | null;
 }
 
 export interface UsageResponse {
