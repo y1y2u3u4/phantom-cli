@@ -127,7 +127,7 @@ echo ""
 DOCKER_ARGS=(
     run -it --rm
     --name "$CONTAINER_NAME"
-    -v "$CRED_DIR:/home/claude"
+    -v "$CRED_DIR:/root"
     --hostname "claude-auth"
 )
 
@@ -148,7 +148,7 @@ echo ""
 if [ -f "$CRED_DIR/.claude/.credentials.json" ]; then
     echo "Credentials saved successfully!"
     echo "  $CRED_DIR/.claude/.credentials.json"
-    # Fix ownership (container runs as uid 1000, host may differ)
+    # Fix ownership and permissions
     chown -R root:root "$CRED_DIR" 2>/dev/null || true
     chmod -R 600 "$CRED_DIR"/.claude/.credentials.json 2>/dev/null || true
     chmod 700 "$CRED_DIR"/.claude 2>/dev/null || true
