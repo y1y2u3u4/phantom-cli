@@ -137,6 +137,12 @@ export const api = {
   deleteInvite: (token: string) =>
     request<MessageResponse>('DELETE', `/api/invites/${encodeURIComponent(token)}`),
 
+  // Settings
+  getSettings: () => request<{ ssh_password: string }>('GET', '/api/settings'),
+  updateSettings: (data: { ssh_password?: string }) =>
+    request<MessageResponse>('PUT', '/api/settings', data),
+  getInstallSettings: () => request<{ ssh_password: string }>('GET', '/api/settings/install'),
+
   // Invite (public)
   checkInvite: (token: string) =>
     request<InviteCheckResponse>('GET', `/api/invite/${encodeURIComponent(token)}`),

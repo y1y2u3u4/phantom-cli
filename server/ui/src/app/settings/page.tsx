@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/contexts/ToastContext';
@@ -10,13 +10,27 @@ import { Button } from '@/components/ui/Button';
 import { Alert } from '@/components/ui/Alert';
 
 export default function SettingsPage() {
-  const { role, username } = useAuth();
+  const { role, username, isAdmin } = useAuth();
   const toast = useToast();
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // Site settings (admin only)
+  const [sshPassword, setSshPassword] = useState('');
+  const [sshPasswordSaved, setSshPasswordSaved] = useState('');
+  const [sshLoading, setSshLoading] = useState(false);
+
+  useEffect(() => {
+    if (isAdmin) {
+      api.getSettings().then((res) => {
+        setSshPassword(res.ssh_password || '');
+        setSshPasswordSaved(res.ssh_password || '');
+      }).catch(() => {});
+    }
+  }, [isAdmin]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -46,6 +60,19 @@ export default function SettingsPage() {
       setError(err.message || 'Failed to change password.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSshSave = async () => {
+    setSshLoading(true);
+    try {
+      await api.updateSettings({ ssh_password: sshPassword });
+      setSshPasswordSaved(sshPassword);
+      toast.success('SSH password updated.');
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to update settings.');
+    } finally {
+      setSshLoading(false);
     }
   };
 
@@ -92,6 +119,35 @@ export default function SettingsPage() {
           </div>
         </form>
       </Card>
+
+      {isAdmin && (
+        <Card>
+          <h3 className="text-sm font-semibold text-text-primary mb-1">Install Settings</h3>
+          <p className="text-xs text-text-secondary mb-4">
+            Configure values shown in member install instructions. The SSH password enables tunnel mode for users behind corporate firewalls.
+          </p>
+
+          <div className="space-y-3">
+            <Input
+              label="VPS SSH Password (for tunnel mode)"
+              type="text"
+              value={sshPassword}
+              onChange={(e) => setSshPassword(e.target.value)}
+              placeholder="Leave empty to disable tunnel instructions"
+            />
+            <div className="pt-1">
+              <Button
+                onClick={handleSshSave}
+                loading={sshLoading}
+                loadingText="Saving..."
+                disabled={sshPassword === sshPasswordSaved}
+              >
+                Save
+              </Button>
+            </div>
+          </div>
+        </Card>
+      )}
     </div>
   );
 }

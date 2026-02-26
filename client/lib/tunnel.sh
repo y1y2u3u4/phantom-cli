@@ -48,8 +48,12 @@ phantom_tunnel_connect() {
 
     if ! _tunnel_start_port_forward "$host" "$ssh_port" "$proxy_port"; then
         log_error "Failed to create SSH tunnel"
+        local sshpass_hint="brew install sshpass"
+        if [[ "$(uname -s)" != "Darwin" ]]; then
+            sshpass_hint="sudo apt install sshpass (or yum install sshpass)"
+        fi
         log_info "  Possible fixes:"
-        log_info "    1. Install sshpass: brew install hudochenkov/sshpass/sshpass"
+        log_info "    1. Install sshpass: $sshpass_hint"
         log_info "    2. Set SSH password: phantom config SSH_PASSWORD <password>"
         log_info "    3. Set up SSH key: ssh-keygen && ssh-copy-id root@${host}"
         return 1

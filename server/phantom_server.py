@@ -2218,6 +2218,17 @@ class PhantomHandler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/api/usage/refresh":
             return self._handle_usage_refresh()
 
+        # ── Site settings ──────────────────────────────────────────────────
+
+        if method == "GET" and path == "/api/settings":
+            return self._handle_settings_get()
+
+        if method == "PUT" and path == "/api/settings":
+            return self._handle_settings_update()
+
+        if method == "GET" and path == "/api/settings/install":
+            return self._handle_settings_install()
+
         # ── Usage & assignments ───────────────────────────────────────────
 
         if method == "GET" and path == "/api/usage":
@@ -3233,6 +3244,42 @@ class PhantomHandler(BaseHTTPRequestHandler):
             })
 
         self._send_json(200, {"invites": result})
+
+    # ── Site settings handlers ─────────────────────────────────────────
+
+    def _handle_settings_get(self) -> None:
+        """Admin: get all site settings."""
+        if not self._require_admin():
+            return
+        cfg = load_server_config()
+        self._send_json(200, {
+            "ssh_password": cfg.get("site_ssh_password", ""),
+        })
+
+    def _handle_settings_update(self) -> None:
+        """Admin: update site settings."""
+        if not self._require_admin():
+            return
+        body = self._parse_json_body()
+        if not body:
+            self._send_json(400, {"error": "Invalid JSON body"})
+            return
+        cfg = load_server_config()
+        if "ssh_password" in body:
+            cfg["site_ssh_password"] = body["ssh_password"].strip()
+        save_server_config(cfg)
+        log("Site settings updated")
+        self._send_json(200, {"message": "Settings updated"})
+
+    def _handle_settings_install(self) -> None:
+        """Any authenticated user: get install-related settings."""
+        if not self._require_auth():
+            return
+        cfg = load_server_config()
+        ssh_pw = cfg.get("site_ssh_password", "")
+        self._send_json(200, {
+            "ssh_password": ssh_pw,
+        })
 
     def _handle_invites_delete(self, token: str) -> None:
         if not self._require_admin():

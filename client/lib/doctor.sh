@@ -9,6 +9,16 @@ phantom_doctor_run() {
 
     local issues=0
 
+    # Detect package manager for install hints
+    local pkg_hint="your package manager to install"
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        pkg_hint="brew install"
+    elif [[ -f /etc/debian_version ]] || grep -qi 'ubuntu\|debian' /etc/os-release 2>/dev/null; then
+        pkg_hint="sudo apt install"
+    elif [[ -f /etc/redhat-release ]] || grep -qi 'centos\|rhel\|fedora' /etc/os-release 2>/dev/null; then
+        pkg_hint="sudo yum install"
+    fi
+
     # Load config early for mode-aware checks
     local server_host http_proxy_port connection_mode proxy_host
     server_host=$(phantom_config_get "SERVER_HOST" 2>/dev/null || echo "")
@@ -26,18 +36,18 @@ phantom_doctor_run() {
     echo -e "${BOLD}Dependencies${NC}"
     _doctor_check "nc (netcat) installed" \
         "command -v nc &>/dev/null" \
-        "Netcat should be pre-installed on macOS"
+        "${pkg_hint} netcat"
     issues=$((issues + $?))
 
     _doctor_check "curl installed" \
         "command -v curl &>/dev/null" \
-        "Install with: brew install curl"
+        "${pkg_hint} curl"
     issues=$((issues + $?))
 
     if [ "$connection_mode" = "tunnel" ] || [ "$connection_mode" = "auto" ]; then
         _doctor_check "ssh installed" \
             "command -v ssh &>/dev/null" \
-            "SSH should be pre-installed on macOS"
+            "${pkg_hint} openssh-client"
         issues=$((issues + $?))
 
         local ssh_password
@@ -45,7 +55,7 @@ phantom_doctor_run() {
         if [ -n "$ssh_password" ]; then
             _doctor_check "sshpass installed (needed for SSH password tunnel)" \
                 "command -v sshpass &>/dev/null" \
-                "Install with: brew install hudochenkov/sshpass/sshpass"
+                "${pkg_hint} sshpass"
             issues=$((issues + $?))
         else
             local ssh_key

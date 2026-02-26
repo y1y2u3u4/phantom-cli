@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { Alert } from '@/components/ui/Alert';
 import { Spinner } from '@/components/ui/Spinner';
+import { CopyButton } from '@/components/ui/CopyButton';
 
 type PageState = 'loading' | 'valid' | 'invalid' | 'registered';
 
@@ -21,6 +22,7 @@ export default function InvitePage() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [sshPassword, setSshPassword] = useState('');
 
   useEffect(() => {
     // Extract token from URL path: /invite/inv_xxx
@@ -61,13 +63,16 @@ export default function InvitePage() {
     try {
       await api.registerInvite(token, trimmedUser, password);
       setPageState('registered');
-      // Auto-login and redirect after a short delay
+      // Auto-login so the "Go to API Keys" button works
       try {
         await api.login(password, trimmedUser);
-        setTimeout(() => router.push('/keys'), 1500);
+        // Fetch install settings after login
+        try {
+          const settings = await api.getInstallSettings();
+          setSshPassword(settings.ssh_password || '');
+        } catch {}
       } catch {
-        // If auto-login fails, user can login manually
-        setTimeout(() => router.push('/'), 3000);
+        // If auto-login fails, user can login manually from the keys page
       }
     } catch (err: any) {
       if (err instanceof ApiError) {
@@ -105,7 +110,43 @@ export default function InvitePage() {
       )}
 
       {pageState === 'registered' && (
-        <Alert type="success" message="Account created! Redirecting to dashboard..." />
+        <div className="space-y-4">
+          <Alert type="success" message="Account created successfully!" />
+
+          <div className="space-y-3 pt-2">
+            <h3 className="text-sm font-medium text-text-primary">Next Steps</h3>
+
+            <div className="flex items-start gap-3">
+              <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-accent/15 text-accent text-xs font-bold shrink-0 mt-0.5">1</span>
+              <div className="text-sm text-text-secondary">
+                <p>Go to <strong className="text-text-primary">API Keys</strong> page and create your key</p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-accent/15 text-accent text-xs font-bold shrink-0 mt-0.5">2</span>
+              <div className="text-sm text-text-secondary">
+                <p>Install Phantom CLI on your machine:</p>
+                <div className="mt-1.5 bg-[var(--bg-secondary)] rounded-lg px-3 py-2">
+                  <code className="text-xs font-mono text-text-primary break-all select-all">
+                    curl -fsSL https://raw.githubusercontent.com/y1y2u3u4/phantom-cli/master/client/install.sh | bash -s -- {typeof window !== 'undefined' ? window.location.hostname : 'VPS_IP'} --key YOUR_API_KEY{sshPassword ? ` --ssh-password ${sshPassword}` : ''}
+                  </code>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-accent/15 text-accent text-xs font-bold shrink-0 mt-0.5">3</span>
+              <div className="text-sm text-text-secondary">
+                <p>Run <code className="px-1 py-0.5 bg-[var(--bg-secondary)] rounded text-text-primary font-mono text-xs">phantom</code> to start Claude</p>
+              </div>
+            </div>
+          </div>
+
+          <Button className="w-full" onClick={() => router.push('/keys')}>
+            Go to API Keys
+          </Button>
+        </div>
       )}
 
       {pageState === 'valid' && (
